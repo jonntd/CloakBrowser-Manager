@@ -1,141 +1,87 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 
-// Mock fetch globally
-const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
-
-function jsonResponse(data: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(data),
-  };
-}
+const mockInvoke = invoke as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  mockFetch.mockReset();
+  mockInvoke.mockReset();
 });
 
-// ── listProfiles ────────────────────────────────────────────────────────────
+describe("api.listAccounts", () => {
+  it("invokes list_accounts", async () => {
+    const accounts = [{ id: "1", name: "Test", status: "stopped" }];
+    mockInvoke.mockResolvedValueOnce(accounts);
+    const result = await api.listAccounts();
+    expect(result).toEqual(accounts);
+    expect(mockInvoke).toHaveBeenCalledWith("list_accounts", undefined);
+  });
+});
 
-describe("api.listProfiles", () => {
-  it("returns profile array on success", async () => {
-    const profiles = [{ id: "1", name: "Test" }];
-    mockFetch.mockResolvedValueOnce(jsonResponse(profiles));
-    const result = await api.listProfiles();
-    expect(result).toEqual(profiles);
-    expect(mockFetch).toHaveBeenCalledWith("/api/profiles", {
-      headers: { "Content-Type": "application/json" },
+describe("api.createAccount", () => {
+  it("invokes create_account with payload", async () => {
+    const account = { id: "2", name: "New", status: "stopped" };
+    mockInvoke.mockResolvedValueOnce(account);
+    await api.createAccount({ name: "New" });
+    expect(mockInvoke).toHaveBeenCalledWith("create_account", {
+      payload: { name: "New" },
     });
   });
 });
 
-// ── createProfile ───────────────────────────────────────────────────────────
-
-describe("api.createProfile", () => {
-  it("sends POST with JSON body", async () => {
-    const profile = { id: "2", name: "New" };
-    mockFetch.mockResolvedValueOnce(jsonResponse(profile));
-    await api.createProfile({ name: "New" });
-    const [url, options] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/profiles");
-    expect(options.method).toBe("POST");
-    expect(JSON.parse(options.body)).toEqual({ name: "New" });
-  });
-});
-
-// ── updateProfile ───────────────────────────────────────────────────────────
-
-describe("api.updateProfile", () => {
-  it("sends PUT with JSON body", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ id: "1", name: "Updated" }));
-    await api.updateProfile("1", { name: "Updated" });
-    const [url, options] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/profiles/1");
-    expect(options.method).toBe("PUT");
-  });
-});
-
-// ── deleteProfile ───────────────────────────────────────────────────────────
-
-describe("api.deleteProfile", () => {
-  it("sends DELETE request", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    const result = await api.deleteProfile("1");
-    expect(result).toEqual({ ok: true });
-    const [url, options] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/profiles/1");
-    expect(options.method).toBe("DELETE");
-  });
-});
-
-// ── launchProfile ───────────────────────────────────────────────────────────
-
-describe("api.launchProfile", () => {
-  it("sends POST to launch endpoint", async () => {
-    const result = { profile_id: "1", status: "running", vnc_ws_port: 6100, display: ":100" };
-    mockFetch.mockResolvedValueOnce(jsonResponse(result));
-    const data = await api.launchProfile("1");
-    expect(data.vnc_ws_port).toBe(6100);
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/profiles/1/launch");
-  });
-});
-
-// ── stopProfile ─────────────────────────────────────────────────────────────
-
-describe("api.stopProfile", () => {
-  it("sends POST to stop endpoint", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await api.stopProfile("1");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/profiles/1/stop");
-  });
-});
-
-// ── setClipboard ────────────────────────────────────────────────────────────
-
-describe("api.setClipboard", () => {
-  it("sends POST with text body", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await api.setClipboard("1", "hello");
-    const [url, options] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/profiles/1/clipboard");
-    expect(options.method).toBe("POST");
-    expect(JSON.parse(options.body)).toEqual({ text: "hello" });
-  });
-});
-
-// ── getClipboard ────────────────────────────────────────────────────────────
-
-describe("api.getClipboard", () => {
-  it("returns clipboard text", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ text: "copied" }));
-    const result = await api.getClipboard("1");
-    expect(result.text).toBe("copied");
-  });
-});
-
-// ── Error handling ──────────────────────────────────────────────────────────
-
-describe("error handling", () => {
-  it("throws ApiError with detail on non-ok response", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      statusText: "Not Found",
-      json: () => Promise.resolve({ detail: "Profile not found" }),
+describe("api.updateAccount", () => {
+  it("invokes update_account with id and payload", async () => {
+    mockInvoke.mockResolvedValueOnce({ id: "1", name: "Updated" });
+    await api.updateAccount("1", { name: "Updated" });
+    expect(mockInvoke).toHaveBeenCalledWith("update_account", {
+      id: "1",
+      payload: { name: "Updated" },
     });
-    await expect(api.getProfile("bad")).rejects.toThrow("Profile not found");
+  });
+});
+
+describe("api.removeAccount", () => {
+  it("invokes remove_account", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await api.removeAccount("1");
+    expect(mockInvoke).toHaveBeenCalledWith("remove_account", { id: "1" });
+  });
+});
+
+describe("api.openAccount", () => {
+  it("invokes open_account", async () => {
+    const result = { account_id: "1", status: "running", pid: 1234 };
+    mockInvoke.mockResolvedValueOnce(result);
+    const data = await api.openAccount("1");
+    expect(data).toEqual(result);
+    expect(mockInvoke).toHaveBeenCalledWith("open_account", { id: "1", url: null });
+  });
+});
+
+describe("api.stopAccount", () => {
+  it("invokes stop_account", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await api.stopAccount("1");
+    expect(mockInvoke).toHaveBeenCalledWith("stop_account", { id: "1" });
+  });
+});
+
+// Back-compat aliases
+describe("api profile aliases", () => {
+  it("listProfiles maps to list_accounts", async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await api.listProfiles();
+    expect(mockInvoke).toHaveBeenCalledWith("list_accounts", undefined);
   });
 
-  it("falls back to statusText when response is not JSON", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 500,
-      statusText: "Internal Server Error",
-      json: () => Promise.reject(new Error("not json")),
-    });
-    await expect(api.getStatus()).rejects.toThrow("Internal Server Error");
+  it("launchProfile maps to open_account", async () => {
+    mockInvoke.mockResolvedValueOnce({ account_id: "1", status: "running", pid: 1 });
+    await api.launchProfile("1");
+    expect(mockInvoke).toHaveBeenCalledWith("open_account", { id: "1", url: null });
   });
 });

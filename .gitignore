@@ -24,3 +24,12 @@ CLAUDE.md
 publish-docker.sh
 .beads
 debug
+
+# ReCode local database
+.recode
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+.cloak-accounts/

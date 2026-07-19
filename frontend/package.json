@@ -8,10 +8,13 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "tauri": "cargo tauri --manifest-path ../src-tauri/Cargo.toml",
+    "tauri:dev": "cargo tauri dev --manifest-path ../src-tauri/Cargo.toml",
+    "tauri:build": "cargo tauri build --manifest-path ../src-tauri/Cargo.toml"
   },
   "dependencies": {
-    "@novnc/novnc": "^1.4.0",
+    "@tauri-apps/api": "^2.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
