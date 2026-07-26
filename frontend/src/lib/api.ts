@@ -108,7 +108,11 @@ export const api = {
 
   stopAccount: (id: string) => call<void>("stop_account", { id }),
 
+  stopAll: () => call<number>("stop_all"),
+
   accountStatus: (id: string) => call<string>("account_status", { id }),
+
+  clearAccountData: (id: string) => call<void>("clear_account_data", { id }),
 
   // Aliases matching old profile API so existing hooks/components compile with minimal churn
   listProfiles: () => call<Account[]>("list_accounts"),

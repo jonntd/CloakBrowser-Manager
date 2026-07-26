@@ -18,11 +18,24 @@ export function useAccounts() {
     }
   }, []);
 
+  // Background status poll: refresh statuses without clearing a user-facing
+  // action error (so a launch-failure message stays readable).
+  const poll = useCallback(async () => {
+    try {
+      const data = await api.listAccounts();
+      setAccounts(data);
+    } catch {
+      // ignore transient poll errors
+    }
+  }, []);
+
+  const dismissError = useCallback(() => setError(null), []);
+
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 3000);
+    const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, poll]);
 
   const create = useCallback(
     async (data: AccountCreateData): Promise<Account | undefined> => {
@@ -59,6 +72,15 @@ export function useAccounts() {
     }
   }, []);
 
+  const clearData = useCallback(async (id: string) => {
+    try {
+      await api.clearAccountData(id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清除浏览器数据失败");
+    }
+  }, [refresh]);
+
   const open = useCallback(
     async (id: string) => {
       try {
@@ -84,7 +106,43 @@ export function useAccounts() {
     [refresh],
   );
 
-  return { accounts, loading, error, refresh, create, update, remove, open, stop };
-}
+  const openMany = useCallback(
+    async (ids: string[]) => {
+      // Launch sequentially to reduce CDP-port allocation races between concurrent launches.
+      for (const id of ids) {
+        try {
+          await api.openAccount(id);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "启动浏览器失败");
+        }
+      }
+      await refresh();
+    },
+    [refresh],
+  );
 
-/** @deprecated use useAccounts */
+  const stopMany = useCallback(
+    async (ids: string[]) => {
+      for (const id of ids) {
+        try {
+          await api.stopAccount(id);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "停止浏览器失败");
+        }
+      }
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const stopAll = useCallback(async () => {
+    try {
+      await api.stopAll();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "全部停止失败");
+    }
+  }, [refresh]);
+
+  return { accounts, loading, error, dismissError, refresh, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData };
+}

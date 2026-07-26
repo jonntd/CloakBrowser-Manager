@@ -17,7 +17,9 @@ pub fn run() {
             commands::remove_account,
             commands::open_account,
             commands::stop_account,
+            commands::stop_all,
             commands::account_status,
+            commands::clear_account_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

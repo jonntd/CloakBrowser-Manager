@@ -71,7 +71,23 @@ pub fn stop_account(id: String, launcher: State<'_, Launcher>) -> Result<(), Str
 }
 
 #[tauri::command]
+pub fn stop_all(launcher: State<'_, Launcher>) -> Result<usize, String> {
+    Ok(launcher.stop_all())
+}
+
+#[tauri::command]
 pub fn account_status(id: String, launcher: State<'_, Launcher>) -> Result<String, String> {
     launcher.reap();
     Ok(launcher.status_of(&id))
+}
+
+#[tauri::command]
+pub fn clear_account_data(id: String) -> Result<(), String> {
+    let account = store::get_account(&id)?;
+    let dir = std::path::Path::new(&account.user_data_dir);
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|e| format!("清除浏览器数据失败: {e}"))?;
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("重建数据目录失败: {e}"))?;
+    Ok(())
 }

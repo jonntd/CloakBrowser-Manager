@@ -1,4 +1,4 @@
-import { Save, Trash2, X } from "lucide-react";
+import { Save, Trash2, X, Shuffle, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Account, AccountCreateData } from "../lib/api";
 
@@ -7,6 +7,8 @@ interface ProfileFormProps {
   onSave: (data: AccountCreateData) => Promise<void>;
   onDelete?: () => Promise<void>;
   onCancel: () => void;
+  onRandomizeFingerprint?: () => void;
+  onClearData?: () => Promise<void>;
 }
 
 type ProfileCreateData = AccountCreateData;
@@ -54,7 +56,7 @@ const GPU_PRESETS: Record<string, { vendor: string; renderer: string }> = {
   },
 };
 
-export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileFormProps) {
+export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFingerprint, onClearData }: ProfileFormProps) {
   const isEdit = profile !== null;
 
   const [form, setForm] = useState<AccountCreateData>({
@@ -75,6 +77,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
   const [tagInput, setTagInput] = useState("");
   const [tagColor, setTagColor] = useState<string | null>("#6366f1");
   const [launchArgInput, setLaunchArgInput] = useState("");
+  const [clearLoading, setClearLoading] = useState(false);
+  const [fingerprintFlash, setFingerprintFlash] = useState(false);
 
   useEffect(() => {
     if (profile) {
@@ -139,6 +143,42 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
 
   const randomizeSeed = () => {
     set("fingerprint_seed", Math.floor(Math.random() * 90000) + 10000);
+    set("hardware_concurrency", Math.floor(Math.random() * 15) + 2);
+
+    const resolutions = Object.values(RESOLUTION_PRESETS);
+    const res = resolutions[Math.floor(Math.random() * resolutions.length)] ?? { width: 1920, height: 1080 };
+    set("screen_width", res.width);
+    set("screen_height", res.height);
+
+    const gpuKeys = Object.keys(GPU_PRESETS);
+    const gpuKey = gpuKeys[Math.floor(Math.random() * gpuKeys.length)];
+    const gpu = gpuKey ? GPU_PRESETS[gpuKey] : undefined;
+    if (gpu) {
+      set("gpu_vendor", gpu.vendor);
+      set("gpu_renderer", gpu.renderer);
+    }
+
+    const platforms = ["windows", "macos", "linux"];
+    set("platform", platforms[Math.floor(Math.random() * platforms.length)] ?? "windows");
+  };
+
+  const handleClearData = async () => {
+    if (!onClearData) return;
+    if (!confirm("清除该账号的浏览器数据（cookie、缓存等）？此操作不可恢复。")) return;
+    setClearLoading(true);
+    try {
+      await onClearData();
+    } finally {
+      setClearLoading(false);
+    }
+  };
+
+  const handleRandomizeFingerprint = () => {
+    if (!onRandomizeFingerprint) return;
+    randomizeSeed();
+    onRandomizeFingerprint();
+    setFingerprintFlash(true);
+    setTimeout(() => setFingerprintFlash(false), 1500);
   };
 
   const currentResolution = Object.entries(RESOLUTION_PRESETS).find(
@@ -189,6 +229,37 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
           )}
         </div>
         <div className="flex items-center gap-2">
+          {isEdit && onRandomizeFingerprint && (
+            <button
+              type="button"
+              onClick={handleRandomizeFingerprint}
+              className="btn-secondary flex items-center gap-1.5"
+              title="生成随机指纹"
+            >
+              {fingerprintFlash ? (
+                <span className="text-amber-400 font-medium">✓</span>
+              ) : (
+                <Shuffle className="h-3.5 w-3.5" />
+              )}
+              <span>随机指纹</span>
+            </button>
+          )}
+          {isEdit && onClearData && (
+            <button
+              type="button"
+              onClick={handleClearData}
+              disabled={clearLoading}
+              className="btn-secondary flex items-center gap-1.5"
+              title="清除浏览器数据"
+            >
+              {clearLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              <span>{clearLoading ? "清除中..." : "清除数据"}</span>
+            </button>
+          )}
           <button type="button" onClick={onCancel} className="btn-secondary">
             取消
           </button>

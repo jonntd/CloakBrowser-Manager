@@ -1,16 +1,15 @@
 import { useState, useCallback } from "react";
-import { PanelLeftClose, PanelLeft, ExternalLink } from "lucide-react";
+import { PanelLeftClose, PanelLeft, ExternalLink, X } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
 import type { AccountCreateData } from "./lib/api";
 import { ProfileList } from "./components/ProfileList";
 import { ProfileForm } from "./components/ProfileForm";
-import { LaunchButton } from "./components/LaunchButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 
 type View = "empty" | "create" | "edit";
 
 export default function App() {
-  const { accounts, loading, error, create, update, remove, open, stop } = useAccounts();
+  const { accounts, loading, error, dismissError, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData } = useAccounts();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -53,16 +52,6 @@ export default function App() {
     setView("empty");
   }, [selectedId, remove]);
 
-  const handleLaunch = useCallback(async () => {
-    if (!selectedId) return;
-    await open(selectedId);
-  }, [selectedId, open]);
-
-  const handleStop = useCallback(async () => {
-    if (!selectedId) return;
-    await stop(selectedId);
-  }, [selectedId, stop]);
-
   if (loading) {
     return (
       <div className="h-screen flex items-center justify-center bg-surface-0">
@@ -81,6 +70,11 @@ export default function App() {
             selectedId={selectedId}
             onSelect={handleSelect}
             onNew={handleNew}
+            onOpen={open}
+            onOpenMany={openMany}
+            onStop={stop}
+            onStopMany={stopMany}
+            onStopAll={stopAll}
           />
         </div>
       )}
@@ -112,21 +106,19 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            {selected && (
-              <LaunchButton
-                status={selected.status}
-                onLaunch={handleLaunch}
-                onStop={handleStop}
-              />
-            )}
-          </div>
         </div>
 
         {/* Error banner */}
         {error && (
-          <div className="px-4 py-2 bg-red-600/15 border-b border-red-600/30 text-red-400 text-sm">
-            {error}
+          <div className="px-4 py-2 bg-red-600/15 border-b border-red-600/30 text-red-400 text-sm flex items-start justify-between gap-3">
+            <span className="whitespace-pre-line">{error}</span>
+            <button
+              onClick={dismissError}
+              className="flex-shrink-0 text-red-400/70 hover:text-red-300"
+              title="关闭"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         )}
 
@@ -172,6 +164,10 @@ export default function App() {
                   setSelectedId(null);
                   setView("empty");
                 }}
+                onRandomizeFingerprint={() => update(selected.id, {
+                  fingerprint_seed: Math.floor(Math.random() * 90000) + 10000,
+                })}
+                onClearData={() => clearData(selected.id)}
               />
             </>
           )}
