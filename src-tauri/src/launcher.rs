@@ -6,10 +6,13 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 /// Seconds to let a browser shut down cleanly (flush cookies/session) after
 /// SIGTERM before we force-kill it.
+#[cfg(unix)]
 const GRACEFUL_STOP_SECS: u64 = 5;
 
 /// CDP port range for account browsers.
@@ -183,6 +186,8 @@ impl Launcher {
     /// Stop every running account browser. Returns the number stopped.
     pub fn stop_all(&self) -> usize {
         // Drain out of the lock first so we don't hold it while waiting.
+        // Only the Unix graceful-stop path needs the Vec itself to be mutable.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut children: Vec<Child> = {
             let mut map = self.running.lock().unwrap();
             map.drain().map(|(_, r)| r.child).collect()
