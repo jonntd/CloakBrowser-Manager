@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Account, type AccountCreateData } from "../lib/api";
+import { api, type Account, type AccountCreateData, type ClearCacheResult, type Endpoint } from "../lib/api";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [endpoints, setEndpoints] = useState<Record<string, Endpoint>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,6 +25,8 @@ export function useAccounts() {
     try {
       const data = await api.listAccounts();
       setAccounts(data);
+      const eps = await api.listEndpoints();
+      setEndpoints(Object.fromEntries(eps.map((e) => [e.id, e])));
     } catch {
       // ignore transient poll errors
     }
@@ -71,6 +74,16 @@ export function useAccounts() {
       setError(err instanceof Error ? err.message : "删除账号失败");
     }
   }, []);
+
+  const clearAllCache = useCallback(async (): Promise<ClearCacheResult | undefined> => {
+    try {
+      const res = await api.clearAllCache();
+      await refresh();
+      return res;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清理缓存失败");
+    }
+  }, [refresh]);
 
   const clearData = useCallback(async (id: string) => {
     try {
@@ -144,5 +157,5 @@ export function useAccounts() {
     }
   }, [refresh]);
 
-  return { accounts, loading, error, dismissError, refresh, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData };
+  return { accounts, endpoints, loading, error, dismissError, refresh, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData, clearAllCache };
 }

@@ -68,6 +68,19 @@ export interface OpenResult {
   pid: number;
 }
 
+export interface ClearCacheResult {
+  cleared: number;
+  skipped_running: number;
+  freed_bytes: number;
+}
+
+export interface Endpoint {
+  id: string;
+  name: string;
+  cdp_port: number;
+  cdp_url: string;
+}
+
 // Back-compat aliases used by reused form components
 export type Profile = Account;
 export type ProfileCreateData = AccountCreateData;
@@ -113,6 +126,10 @@ export const api = {
   accountStatus: (id: string) => call<string>("account_status", { id }),
 
   clearAccountData: (id: string) => call<void>("clear_account_data", { id }),
+
+  clearAllCache: () => call<ClearCacheResult>("clear_all_cache"),
+
+  listEndpoints: () => call<Endpoint[]>("list_endpoints"),
 
   // Aliases matching old profile API so existing hooks/components compile with minimal churn
   listProfiles: () => call<Account[]>("list_accounts"),

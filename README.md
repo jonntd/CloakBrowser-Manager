@@ -58,8 +58,71 @@ npm run tauri:dev
 ```
 ~/.cloak-accounts/
   accounts.json          # 账号元数据
+  endpoints.json         # 运行中浏览器的 CDP 端点清单（自动更新）
   profiles/<uuid>/       # 每账号独立 Chromium 用户数据
+  logs/<uuid>.log        # 每账号 launcher 日志（含 CDP_PORT）
   tmp/<uuid>.json        # 启动时临时传给 launcher 的配置
+```
+
+## 用 Claude / 外部工具控制浏览器（CDP）
+
+每个启动的浏览器都开着 **CDP（Chrome DevTools Protocol）** 端口，可被 Claude、
+Playwright、Puppeteer 或 IDE 的浏览器调试工具接管。
+
+**自动发现**：运行中的浏览器会实时写入 `~/.cloak-accounts/endpoints.json`：
+
+```json
+[
+  { "id": "…", "name": "账号A", "cdp_port": 5100, "cdp_url": "http://127.0.0.1:5100" }
+]
+```
+
+读这个文件即可拿到每个账号浏览器的 CDP 地址。也可在应用内通过 `list_endpoints`
+命令获取同样的数据。
+
+**连接方式**：
+
+```bash
+# 验证端点 / 列出页面
+curl http://127.0.0.1:5100/json/version
+curl http://127.0.0.1:5100/json
+```
+
+```js
+// Playwright
+const browser = await chromium.connectOverCDP("http://127.0.0.1:5100");
+
+// Puppeteer
+const browser = await puppeteer.connect({ browserURL: "http://127.0.0.1:5100" });
+```
+
+- **Claude**：读取 `endpoints.json` 拿到端口，用 `chrome-cdp` 能力连到该端口驱动页面。
+- 端点默认只绑 `127.0.0.1`（仅本机）。跨机器控制请用 SSH 端口转发，**不要**把它暴露到公网——CDP 无鉴权，能连端口即可完全控制浏览器（含读取 cookie）。
+
+## 让 Claude 管理账号（MCP 服务 + HTTP API）
+
+应用运行时会内嵌一个本地 **HTTP 账号 API**（`127.0.0.1:8797`，地址写在
+`~/.cloak-accounts/server.json`），GUI 与该 API 共享同一个进程管理器。
+
+在其上提供了一个 **MCP 服务**，让 Claude 直接以工具方式管理账号（列出 / 启动 /
+停止 / 拿 CDP 地址 / 新建），启动后再经 CDP 控制对应账号的浏览器。
+
+一次性接入：
+
+```bash
+claude mcp add cloak-accounts -- python3 mcp-server/cloak_accounts_mcp.py
+```
+
+之后直接对 Claude 说「启动账号 X 并打开某站」即可。详见
+[mcp-server/README.md](mcp-server/README.md)。
+
+也可不经 MCP，直接调 HTTP API：
+
+```bash
+curl http://127.0.0.1:8797/accounts
+curl -X POST http://127.0.0.1:8797/accounts/<id或名称>/start -d '{"url":"https://example.com"}'
+curl http://127.0.0.1:8797/endpoints
+curl -X POST http://127.0.0.1:8797/accounts/<id或名称>/stop
 ```
 
 ## 架构

@@ -1,6 +1,6 @@
-import { Plus, Search, Monitor, Play, Square, Loader2 } from "lucide-react";
+import { Plus, Search, Monitor, Play, Square, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
-import type { Account } from "../lib/api";
+import type { Account, ClearCacheResult } from "../lib/api";
 import { StatusIndicator } from "./StatusIndicator";
 
 interface ProfileListProps {
@@ -13,14 +13,32 @@ interface ProfileListProps {
   onStop: (id: string) => Promise<unknown>;
   onStopMany: (ids: string[]) => Promise<unknown>;
   onStopAll: () => Promise<unknown>;
+  onClearAllCache: () => Promise<ClearCacheResult | undefined>;
 }
 
-export function ProfileList({ profiles, selectedId, onSelect, onNew, onOpen, onOpenMany, onStop, onStopMany, onStopAll }: ProfileListProps) {
+export function ProfileList({ profiles, selectedId, onSelect, onNew, onOpen, onOpenMany, onStop, onStopMany, onStopAll, onClearAllCache }: ProfileListProps) {
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [stopAllLoading, setStopAllLoading] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchLoading, setBatchLoading] = useState(false);
+  const [cacheLoading, setCacheLoading] = useState(false);
+  const [cacheMsg, setCacheMsg] = useState<string | null>(null);
+
+  const handleClearAllCache = async () => {
+    setCacheLoading(true);
+    try {
+      const res = await onClearAllCache();
+      if (res) {
+        const mb = (res.freed_bytes / 1048576).toFixed(1);
+        const skip = res.skipped_running > 0 ? `，${res.skipped_running} 个运行中已跳过` : "";
+        setCacheMsg(`已清理 ${res.cleared} 个 · 释放 ${mb} MB${skip}`);
+        setTimeout(() => setCacheMsg(null), 4000);
+      }
+    } finally {
+      setCacheLoading(false);
+    }
+  };
 
   const toggleChecked = (id: string) => {
     setChecked((prev) => {
@@ -274,11 +292,26 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew, onOpen, onO
         ))}
       </div>
 
-      <div className="p-3 border-t border-border">
+      <div className="p-3 border-t border-border space-y-2">
         <button onClick={onNew} className="btn-secondary w-full flex items-center justify-center gap-1.5">
           <Plus className="h-3.5 w-3.5" />
           <span>新建账号</span>
         </button>
+        {profiles.length > 0 && (
+          <button
+            onClick={handleClearAllCache}
+            disabled={cacheLoading}
+            className="w-full flex items-center justify-center gap-1.5 py-1 text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50"
+            title="清理所有账号的浏览器缓存（保留 cookie / 登录）"
+          >
+            {cacheLoading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+            <span>{cacheMsg ?? "清理所有缓存（保留 cookie）"}</span>
+          </button>
+        )}
       </div>
     </div>
   );

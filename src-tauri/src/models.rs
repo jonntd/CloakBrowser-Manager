@@ -100,3 +100,23 @@ pub struct OpenResult {
     pub status: String,
     pub pid: u32,
 }
+
+/// A running browser's CDP endpoint, for external control (Claude / Playwright / …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub id: String,
+    pub name: String,
+    pub cdp_port: u16,
+    /// http://127.0.0.1:<port> — pass to connectOverCDP / DevTools.
+    pub cdp_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClearCacheResult {
+    /// Accounts whose cache was cleared.
+    pub cleared: usize,
+    /// Accounts skipped because their browser is running.
+    pub skipped_running: usize,
+    /// Total bytes freed (best-effort).
+    pub freed_bytes: u64,
+}

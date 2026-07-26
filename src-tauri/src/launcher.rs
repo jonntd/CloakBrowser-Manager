@@ -1,14 +1,30 @@
 use crate::models::Account;
 use crate::store;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-/// Tracks running account browsers: account_id -> (pid, child handle).
+/// Seconds to let a browser shut down cleanly (flush cookies/session) after
+/// SIGTERM before we force-kill it.
+const GRACEFUL_STOP_SECS: u64 = 5;
+
+/// CDP port range for account browsers.
+const CDP_PORT_BASE: u16 = 5100;
+const CDP_PORT_END: u16 = 5200;
+
+/// A running account browser: the launcher child and the CDP port it owns.
+struct Running {
+    child: Child,
+    cdp_port: u16,
+}
+
+/// Tracks running account browsers: account_id -> Running.
 pub struct Launcher {
-    running: Mutex<HashMap<String, Child>>,
+    running: Mutex<HashMap<String, Running>>,
 }
 
 impl Launcher {
@@ -20,8 +36,8 @@ impl Launcher {
 
     pub fn is_running(&self, id: &str) -> bool {
         let mut map = self.running.lock().unwrap();
-        if let Some(child) = map.get_mut(id) {
-            match child.try_wait() {
+        if let Some(r) = map.get_mut(id) {
+            match r.child.try_wait() {
                 Ok(Some(_)) => {
                     // Process exited
                     map.remove(id);
@@ -44,6 +60,11 @@ impl Launcher {
         } else {
             "stopped".into()
         }
+    }
+
+    /// The CDP port a running browser is listening on (assigned by us at launch).
+    pub fn cdp_port_of(&self, id: &str) -> Option<u16> {
+        self.running.lock().unwrap().get(id).map(|r| r.cdp_port)
     }
 
     pub fn open(&self, account: &Account, url: Option<String>) -> Result<u32, String> {
@@ -101,37 +122,54 @@ impl Launcher {
             }
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("启动浏览器失败（请确认已安装 Python 与 cloakbrowser）: {e}"))?;
-
-        let pid = child.id();
+        // Allocate a CDP port, spawn, and register under a single lock hold so
+        // two concurrent launches can never be assigned the same port (the old
+        // probe-in-the-launcher approach raced: the browser binds the port
+        // seconds after the probe, so a second launch would pick it too).
+        let pid = {
+            let mut map = self.running.lock().unwrap();
+            let cdp_port = allocate_cdp_port(&map)?;
+            cmd.arg("--cdp-port").arg(cdp_port.to_string());
+            let child = cmd.spawn().map_err(|e| {
+                format!("启动浏览器失败（请确认已安装 Python 与 cloakbrowser）: {e}")
+            })?;
+            let pid = child.id();
+            map.insert(account.id.clone(), Running { child, cdp_port });
+            pid
+        };
 
         // Grace period: catch launches that fail fast (missing cloakbrowser,
-        // bad proxy, no free CDP port, …) and surface a friendly reason to the
-        // UI instead of silently flipping back to "stopped".
+        // bad proxy, …) and surface a friendly reason to the UI instead of
+        // silently flipping back to "stopped".
+        let mut failed = None;
         for _ in 0..15 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let log = fs::read_to_string(&log_path).unwrap_or_default();
-                    return Err(friendly_launch_error(&log, status));
-                }
-                Ok(None) => {} // still alive — keep waiting out the grace window
-                Err(_) => break,
+            std::thread::sleep(Duration::from_millis(100));
+            let mut map = self.running.lock().unwrap();
+            match map.get_mut(&account.id) {
+                Some(r) => match r.child.try_wait() {
+                    Ok(Some(status)) => {
+                        failed = Some(status);
+                        map.remove(&account.id);
+                        break;
+                    }
+                    Ok(None) => {}   // still alive — keep waiting out the grace window
+                    Err(_) => break, // treat as launched; reap() handles it later
+                },
+                None => break, // no longer tracked (stopped concurrently)
             }
         }
-
-        // Still running after the grace window → treat as a successful launch.
-        self.running.lock().unwrap().insert(account.id.clone(), child);
+        if let Some(status) = failed {
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
+            return Err(friendly_launch_error(&log, status));
+        }
         Ok(pid)
     }
 
     pub fn stop(&self, id: &str) -> Result<(), String> {
-        let child = self.running.lock().unwrap().remove(id);
-        match child {
-            Some(mut child) => {
-                terminate(&mut child);
+        let running = self.running.lock().unwrap().remove(id);
+        match running {
+            Some(mut r) => {
+                terminate(&mut r.child);
                 Ok(())
             }
             None => Err("该账号浏览器未在运行".into()),
@@ -145,23 +183,33 @@ impl Launcher {
     /// Stop every running account browser. Returns the number stopped.
     pub fn stop_all(&self) -> usize {
         // Drain out of the lock first so we don't hold it while waiting.
-        let children: Vec<Child> = {
+        let mut children: Vec<Child> = {
             let mut map = self.running.lock().unwrap();
-            map.drain().map(|(_, c)| c).collect()
+            map.drain().map(|(_, r)| r.child).collect()
         };
         let count = children.len();
-        eprintln!("[stop_all] terminating {count} browser process group(s)");
+        eprintln!("[stop_all] terminating {count} browser(s)");
 
         #[cfg(unix)]
         {
-            // Signal each whole process group once, sleep, then force-kill — so
-            // every browser gets a graceful window in parallel instead of 300ms × N.
+            // Ask each launcher to close its browser cleanly (SIGTERM to the
+            // launcher pid → context.close() flushes cookies/session), then wait
+            // for all of them in parallel, force-killing only stragglers.
             for c in &children {
-                signal_group(c, libc::SIGTERM);
+                signal_pid(c, libc::SIGTERM);
             }
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            for c in &children {
-                signal_group(c, libc::SIGKILL);
+            let deadline = Instant::now() + Duration::from_secs(GRACEFUL_STOP_SECS);
+            while Instant::now() < deadline
+                && children
+                    .iter_mut()
+                    .any(|c| matches!(c.try_wait(), Ok(None)))
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            for c in &mut children {
+                if matches!(c.try_wait(), Ok(None)) {
+                    signal_group(c, libc::SIGKILL);
+                }
             }
         }
 
@@ -180,7 +228,7 @@ impl Launcher {
         let mut map = self.running.lock().unwrap();
         let finished: Vec<String> = map
             .iter_mut()
-            .filter_map(|(id, child)| match child.try_wait() {
+            .filter_map(|(id, r)| match r.child.try_wait() {
                 Ok(Some(_)) | Err(_) => Some(id.clone()),
                 Ok(None) => None,
             })
@@ -189,6 +237,25 @@ impl Launcher {
             map.remove(&id);
         }
     }
+}
+
+/// Pick a free CDP port not already assigned to a running browser. Probing with
+/// a real bind avoids OS-occupied ports; excluding in-use ports avoids handing
+/// the same port to two launches whose browsers haven't bound yet.
+fn allocate_cdp_port(running: &HashMap<String, Running>) -> Result<u16, String> {
+    let used: HashSet<u16> = running.values().map(|r| r.cdp_port).collect();
+    for port in CDP_PORT_BASE..CDP_PORT_END {
+        if used.contains(&port) {
+            continue;
+        }
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    Err(format!(
+        "没有可用的调试端口（CDP {CDP_PORT_BASE}-{}）",
+        CDP_PORT_END - 1
+    ))
 }
 
 impl Default for Launcher {
@@ -246,13 +313,41 @@ fn signal_group(child: &Child, sig: libc::c_int) {
     }
 }
 
+/// Send `sig` to the launcher's own pid (not the group).
+///
+/// SIGTERM here is caught by the launcher, which closes the browser cleanly via
+/// `context.close()` so cookies/session are flushed to the profile dir. Only if
+/// the launcher fails to exit do we escalate to a group SIGKILL.
+#[cfg(unix)]
+fn signal_pid(child: &Child, sig: libc::c_int) {
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, sig);
+    }
+}
+
+/// Poll for the child to exit within `timeout`. Returns true if it exited.
+#[cfg(unix)]
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return true,
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+    matches!(child.try_wait(), Ok(Some(_)) | Err(_))
+}
+
 /// Gracefully then forcefully terminate a single launcher + its browser.
 fn terminate(child: &mut Child) {
     #[cfg(unix)]
     {
-        signal_group(child, libc::SIGTERM);
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        signal_group(child, libc::SIGKILL);
+        // Ask the launcher to close the browser cleanly (flush login/session),
+        // then force-kill the whole group only if it overstays the grace window.
+        signal_pid(child, libc::SIGTERM);
+        if !wait_for_exit(child, Duration::from_secs(GRACEFUL_STOP_SECS)) {
+            signal_group(child, libc::SIGKILL);
+        }
     }
     #[cfg(not(unix))]
     {

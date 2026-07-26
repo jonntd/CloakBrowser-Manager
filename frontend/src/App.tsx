@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { PanelLeftClose, PanelLeft, ExternalLink, X } from "lucide-react";
+import { PanelLeftClose, PanelLeft, ExternalLink, X, Copy, Check } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
 import type { AccountCreateData } from "./lib/api";
 import { ProfileList } from "./components/ProfileList";
@@ -8,13 +8,33 @@ import { StatusIndicator } from "./components/StatusIndicator";
 
 type View = "empty" | "create" | "edit";
 
+/** Copy text via a hidden textarea + execCommand — works in the Tauri webview
+ *  without the clipboard plugin/permission. */
+function copyText(text: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
-  const { accounts, loading, error, dismissError, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData } = useAccounts();
+  const { accounts, endpoints, loading, error, dismissError, create, update, remove, open, openMany, stop, stopMany, stopAll, clearData, clearAllCache } = useAccounts();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
+  const selectedEndpoint = selected ? endpoints[selected.id] : undefined;
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
@@ -75,6 +95,7 @@ export default function App() {
             onStop={stop}
             onStopMany={stopMany}
             onStopAll={stopAll}
+            onClearAllCache={clearAllCache}
           />
         </div>
       )}
@@ -106,6 +127,25 @@ export default function App() {
               </div>
             )}
           </div>
+          {selected && selectedEndpoint && (
+            <button
+              onClick={() => {
+                if (copyText(selectedEndpoint.cdp_url)) {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }
+              }}
+              className="flex items-center gap-1.5 text-xs font-mono text-gray-400 hover:text-gray-200 bg-surface-2 hover:bg-surface-3 rounded px-2 py-1"
+              title="复制 CDP 地址（供 Claude / Playwright 连接控制）"
+            >
+              <span>CDP {selectedEndpoint.cdp_url.replace("http://", "")}</span>
+              {copied ? (
+                <Check className="h-3 w-3 text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </button>
+          )}
         </div>
 
         {/* Error banner */}

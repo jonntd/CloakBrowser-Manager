@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -244,12 +245,52 @@ def _clean_lock_files(user_data_dir: Path) -> None:
         (user_data_dir / name).unlink(missing_ok=True)
 
 
+# Pure-cache directories that are safe to delete on close. Deleting these frees
+# disk without touching login state: Cookies, "Local Storage", IndexedDB,
+# "Login Data" and "Network/Cookies" are deliberately NOT in this list.
+CACHE_SUBPATHS = (
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/DawnCache",
+    "Default/DawnGraphiteCache",
+    "Default/DawnWebGPUCache",
+    "Default/GrShaderCache",
+    "Default/Service Worker/CacheStorage",
+    "Default/Service Worker/ScriptCache",
+    "GPUCache",
+    "ShaderCache",
+    "GrShaderCache",
+    "component_crx_cache",
+)
+
+
+def _clean_cache_keep_cookies(user_data_dir: Path) -> None:
+    """Delete HTTP/GPU/code caches after the browser closes, keeping cookies.
+
+    Must run only once the browser has fully shut down (file locks released),
+    otherwise Chromium may recreate or partially hold these directories.
+    """
+    import shutil
+
+    cleared = 0
+    for rel in CACHE_SUBPATHS:
+        p = user_data_dir / rel
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
+            if not p.exists():
+                cleared += 1
+    logger.info(
+        "Cleared %d cache dir(s), kept cookies for %s", cleared, user_data_dir.name
+    )
+
+
 # ---------------------------------------------------------------------------
 # Launch
 # ---------------------------------------------------------------------------
 
 
-async def run(account: dict[str, Any], start_url: str | None) -> None:
+async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | None = None) -> None:
     try:
         from cloakbrowser import launch_persistent_context_async
     except ImportError:
@@ -265,7 +306,10 @@ async def run(account: dict[str, Any], start_url: str | None) -> None:
 
     extra_args = _build_fingerprint_args(account)
     extra_args += list(account.get("launch_args") or [])
-    cdp_port = _allocate_cdp_port()
+    # Prefer the port assigned by the desktop app (collision-free across accounts);
+    # fall back to probing when run standalone.
+    if cdp_port is None:
+        cdp_port = _allocate_cdp_port()
     extra_args.append(f"--remote-debugging-port={cdp_port}")
 
     raw_proxy = account.get("proxy") or None
@@ -323,6 +367,16 @@ async def run(account: dict[str, Any], start_url: str | None) -> None:
 
     context.on("close", lambda: _on_close())
 
+    # Shut down cleanly on SIGTERM/SIGINT (sent by the desktop app's stop/stop-all
+    # or quit) so the browser flushes cookies/session to the profile dir before
+    # the process exits, instead of being hard-killed mid-write.
+    loop = asyncio.get_running_loop()
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(_sig, closed.set)
+        except (NotImplementedError, RuntimeError):
+            pass  # signal handlers unsupported on this loop/platform
+
     try:
         await closed.wait()
     except asyncio.CancelledError:
@@ -332,6 +386,11 @@ async def run(account: dict[str, Any], start_url: str | None) -> None:
             await context.close()
         except Exception as exc:
             logger.debug("context.close failed: %s", exc)
+        # Browser is fully closed now → safe to purge caches while keeping cookies.
+        try:
+            _clean_cache_keep_cookies(user_data_dir)
+        except Exception as exc:
+            logger.debug("cache cleanup failed: %s", exc)
         logger.info("Browser closed for account %s", account.get("id"))
 
 
@@ -343,6 +402,12 @@ def main() -> None:
         help="Path to JSON file containing the account config",
     )
     parser.add_argument("--url", default=None, help="Optional start URL override")
+    parser.add_argument(
+        "--cdp-port",
+        type=int,
+        default=None,
+        help="CDP remote-debugging port assigned by the app (avoids probing/collisions)",
+    )
     args = parser.parse_args()
 
     path = Path(args.account_file)
@@ -352,7 +417,7 @@ def main() -> None:
 
     account = json.loads(path.read_text(encoding="utf-8"))
     try:
-        asyncio.run(run(account, args.url))
+        asyncio.run(run(account, args.url, args.cdp_port))
     except KeyboardInterrupt:
         pass
     except Exception as exc:

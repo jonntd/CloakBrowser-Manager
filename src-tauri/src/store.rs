@@ -224,6 +224,55 @@ pub fn remove_account(id: &str) -> Result<Account, String> {
     Ok(account)
 }
 
+/// Cache subdirectories (relative to a profile's user_data_dir) safe to delete
+/// while keeping cookies/login. Keep in sync with cloak_launcher.py CACHE_SUBPATHS.
+const CACHE_SUBPATHS: &[&str] = &[
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/DawnCache",
+    "Default/DawnGraphiteCache",
+    "Default/DawnWebGPUCache",
+    "Default/GrShaderCache",
+    "Default/Service Worker/CacheStorage",
+    "Default/Service Worker/ScriptCache",
+    "GPUCache",
+    "ShaderCache",
+    "GrShaderCache",
+    "component_crx_cache",
+];
+
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for e in entries.flatten() {
+            match e.file_type() {
+                Ok(ft) if ft.is_dir() => total += dir_size(&e.path()),
+                Ok(ft) if ft.is_file() => {
+                    if let Ok(md) = e.metadata() {
+                        total += md.len();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    total
+}
+
+/// Delete cache subdirs under `user_data_dir` (keeps cookies). Returns bytes freed.
+pub fn clear_cache(user_data_dir: &Path) -> u64 {
+    let mut freed = 0;
+    for rel in CACHE_SUBPATHS {
+        let p = user_data_dir.join(rel);
+        if p.exists() {
+            freed += dir_size(&p);
+            let _ = fs::remove_dir_all(&p);
+        }
+    }
+    freed
+}
+
 fn empty_to_none(v: Option<String>) -> Option<String> {
     v.and_then(|s| {
         let t = s.trim().to_string();

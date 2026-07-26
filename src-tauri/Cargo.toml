@@ -21,6 +21,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 rand = "0.8"
 dirs = "5"
 libc = "0.2"
+tiny_http = "0.12"
 
 [profile.release]
 panic = "abort"
