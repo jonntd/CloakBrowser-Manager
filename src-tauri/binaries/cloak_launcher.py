@@ -64,8 +64,146 @@ def _validate_proxy(url: str) -> None:
         raise ValueError(f"Proxy URL missing port: {url}")
 
 
+def _chrome_bookmarks_path() -> Path | None:
+    """Locate the local Chrome Bookmarks file (Default profile preferred)."""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support/Google/Chrome"
+    elif sys.platform.startswith("win"):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            return None
+        base = Path(local_app_data) / "Google/Chrome/User Data"
+    else:
+        base = Path.home() / ".config/google-chrome"
+    if not base.is_dir():
+        return None
+    default = base / "Default" / "Bookmarks"
+    if default.exists():
+        return default
+    profiles = sorted(
+        base.glob("Profile */Bookmarks"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return profiles[0] if profiles else None
+
+
+# Marker stored in each imported node's meta_info. Chromium round-trips
+# meta_info untouched, which lets every launch find and replace the nodes
+# imported last time (mirroring Chrome-side edits and deletions) without
+# touching bookmarks the user created inside the account profile.
+_IMPORT_MARK = {"cloak_src": "chrome"}
+
+
+def _is_imported(node: dict) -> bool:
+    return (node.get("meta_info") or {}).get("cloak_src") == "chrome"
+
+
+def _sanitize_bookmark_node(node: dict) -> dict | None:
+    """Copy a Chrome bookmark node, dropping ids/guids so Chromium reassigns them."""
+    node_type = node.get("type")
+    if node_type == "url":
+        if not node.get("url"):
+            return None
+        return {
+            "type": "url",
+            "name": node.get("name", ""),
+            "url": node["url"],
+            "date_added": node.get("date_added", "0"),
+            "meta_info": dict(_IMPORT_MARK),
+        }
+    if node_type == "folder":
+        children = [
+            c
+            for c in (_sanitize_bookmark_node(ch) for ch in node.get("children", []))
+            if c
+        ]
+        return {
+            "type": "folder",
+            "name": node.get("name", ""),
+            "children": children,
+            "date_added": node.get("date_added", "0"),
+            "date_modified": node.get("date_modified", "0"),
+            "meta_info": dict(_IMPORT_MARK),
+        }
+    return None
+
+
+def _load_chrome_bookmarks() -> tuple[list, list] | None:
+    """Read the local Chrome bookmarks as (bar_children, other_children).
+
+    Returns None when Chrome's bookmarks can't be found or parsed, so callers
+    can skip the sync instead of wiping previously imported nodes.
+    """
+    path = _chrome_bookmarks_path()
+    if path is None:
+        return None
+    try:
+        roots = json.loads(path.read_text(encoding="utf-8")).get("roots", {})
+    except Exception as exc:
+        logger.warning("Failed to read Chrome bookmarks at %s: %s", path, exc)
+        return None
+
+    def children_of(root_key: str) -> list:
+        raw = roots.get(root_key, {}).get("children", [])
+        return [c for c in (_sanitize_bookmark_node(ch) for ch in raw) if c]
+
+    bar = children_of("bookmark_bar")
+    other = children_of("other")
+    if bar or other:
+        logger.info(
+            "Importing %d bar + %d other bookmark(s) from Chrome (%s)",
+            len(bar),
+            len(other),
+            path,
+        )
+    return bar, other
+
+
+def _strip_imported(nodes: list) -> list:
+    """Remove previously imported nodes anywhere in the tree."""
+    kept = []
+    for node in nodes:
+        if _is_imported(node):
+            continue
+        if node.get("type") == "folder":
+            node["children"] = _strip_imported(node.get("children") or [])
+        kept.append(node)
+    return kept
+
+
+def _sync_chrome_bookmarks(bookmarks_path: Path) -> None:
+    """Mirror Chrome's current bookmarks into an existing profile.
+
+    Replaces the nodes imported on a previous launch with Chrome's current
+    state; bookmarks created inside the account profile are preserved. Must
+    run while the browser is closed.
+    """
+    imported = _load_chrome_bookmarks()
+    if imported is None:
+        return
+    chrome_bar, chrome_other = imported
+
+    try:
+        data = json.loads(bookmarks_path.read_text(encoding="utf-8"))
+        roots = data["roots"]
+    except Exception as exc:
+        logger.warning("Skipping bookmark sync, unreadable %s: %s", bookmarks_path, exc)
+        return
+
+    for root_key, fresh in (("bookmark_bar", chrome_bar), ("other", chrome_other)):
+        root = roots.get(root_key)
+        if root is None:
+            continue
+        root["children"] = _strip_imported(root.get("children") or []) + fresh
+
+    data["checksum"] = ""  # Chromium recomputes it on load
+    bookmarks_path.write_text(json.dumps(data, indent=2))
+    logger.info("Synced Chrome bookmarks into %s", bookmarks_path.parent.parent.name)
+
+
 def _init_profile_defaults(user_data_dir: Path) -> None:
-    """Set up bookmarks and DuckDuckGo search on first launch."""
+    """Seed bookmarks/search on first launch; re-sync Chrome bookmarks after."""
     default_dir = user_data_dir / "Default"
     default_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,6 +234,8 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
                 "date_added": ts,
                 "date_modified": ts,
             }
+
+        chrome_bar, chrome_other = _load_chrome_bookmarks() or ([], [])
 
         bookmarks = {
             "checksum": "",
@@ -152,13 +292,14 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
                                 bm("Turnstile", "https://peet.ws/turnstile-test/non-interactive.html"),
                             ],
                         ),
-                    ],
+                    ]
+                    + chrome_bar,
                 },
                 "other": {
                     "type": "folder",
                     "id": "2",
                     "name": "Other bookmarks",
-                    "children": [],
+                    "children": chrome_other,
                 },
                 "synced": {
                     "type": "folder",
@@ -171,6 +312,8 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
         }
         bookmarks_path.write_text(json.dumps(bookmarks, indent=2))
         logger.info("Created default bookmarks for %s", user_data_dir.name)
+    else:
+        _sync_chrome_bookmarks(bookmarks_path)
 
     prefs_path = default_dir / "Preferences"
     if not prefs_path.exists():
@@ -245,6 +388,50 @@ def _clean_lock_files(user_data_dir: Path) -> None:
         (user_data_dir / name).unlink(missing_ok=True)
 
 
+# Shared, unpacked extensions dropped here load into EVERY account's browser.
+GLOBAL_EXTENSIONS_DIR = Path.home() / ".cloak-accounts" / "extensions"
+
+
+def _resolve_extensions(account: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return (extension_dirs, remaining_launch_args).
+
+    Combines unpacked extensions from the global shared dir with any
+    ``--load-extension=`` paths in the account's launch_args, so every extension
+    ends up in a single ``--load-extension`` flag (Chromium honours only one).
+    """
+    paths: list[str] = []
+    if GLOBAL_EXTENSIONS_DIR.exists():
+        for d in sorted(GLOBAL_EXTENSIONS_DIR.iterdir()):
+            if d.is_dir() and (d / "manifest.json").exists():
+                paths.append(str(d))
+
+    remaining: list[str] = []
+    for arg in account.get("launch_args") or []:
+        if arg.startswith("--load-extension="):
+            for p in arg.split("=", 1)[1].split(","):
+                if p and p not in paths:
+                    paths.append(p)
+        else:
+            remaining.append(arg)
+    return paths, remaining
+
+
+def _ensure_developer_mode(user_data_dir: Path) -> None:
+    """Turn on chrome://extensions Developer Mode by seeding the profile prefs
+    (must run while the browser is not running)."""
+    default_dir = user_data_dir / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    prefs_path = default_dir / "Preferences"
+    prefs: dict = {}
+    if prefs_path.exists():
+        try:
+            prefs = json.loads(prefs_path.read_text())
+        except Exception:
+            prefs = {}
+    prefs.setdefault("extensions", {}).setdefault("ui", {})["developer_mode"] = True
+    prefs_path.write_text(json.dumps(prefs))
+
+
 # Pure-cache directories that are safe to delete on close. Deleting these frees
 # disk without touching login state: Cookies, "Local Storage", IndexedDB,
 # "Login Data" and "Network/Cookies" are deliberately NOT in this list.
@@ -303,9 +490,17 @@ async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | No
     user_data_dir.mkdir(parents=True, exist_ok=True)
     _clean_lock_files(user_data_dir)
     _init_profile_defaults(user_data_dir)
+    _ensure_developer_mode(user_data_dir)
 
     extra_args = _build_fingerprint_args(account)
-    extra_args += list(account.get("launch_args") or [])
+    # Shared + per-account unpacked extensions — passed via cloakbrowser's
+    # extension_paths (it emits the correct --disable-extensions-except +
+    # --load-extension pair; a bare --load-extension alone doesn't load).
+    ext_paths, other_args = _resolve_extensions(account)
+    extra_args += other_args
+    if ext_paths:
+        logger.info("Loading %d extension(s): %s", len(ext_paths), ext_paths)
+
     # Prefer the port assigned by the desktop app (collision-free across accounts);
     # fall back to probing when run standalone.
     if cdp_port is None:
@@ -337,6 +532,7 @@ async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | No
         headless=False,
         proxy=proxy,
         args=extra_args,
+        extension_paths=ext_paths or None,
         timezone=account.get("timezone") or None,
         locale=account.get("locale") or None,
         humanize=bool(account.get("humanize", False)),

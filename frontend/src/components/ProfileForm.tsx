@@ -1,6 +1,7 @@
 import { Save, Trash2, X, Shuffle, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Account, AccountCreateData } from "../lib/api";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface ProfileFormProps {
   profile: Account | null; // null = create mode
@@ -79,6 +80,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
   const [launchArgInput, setLaunchArgInput] = useState("");
   const [clearLoading, setClearLoading] = useState(false);
   const [fingerprintFlash, setFingerprintFlash] = useState(false);
+  // window.confirm 在 Tauri WebView 中不可用（直接返回 falsy），用应用内弹窗代替
+  const [pendingConfirm, setPendingConfirm] = useState<"delete" | "clearData" | null>(null);
 
   useEffect(() => {
     if (profile) {
@@ -124,12 +127,12 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
 
   const handleDelete = async () => {
     if (!onDelete) return;
-    if (!confirm("删除该账号？浏览器数据（cookie、缓存等）将永久删除，且不可恢复。")) return;
     setDeleting(true);
     try {
       await onDelete();
     } finally {
       setDeleting(false);
+      setPendingConfirm(null);
     }
   };
 
@@ -164,12 +167,12 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
 
   const handleClearData = async () => {
     if (!onClearData) return;
-    if (!confirm("清除该账号的浏览器数据（cookie、缓存等）？此操作不可恢复。")) return;
     setClearLoading(true);
     try {
       await onClearData();
     } finally {
       setClearLoading(false);
+      setPendingConfirm(null);
     }
   };
 
@@ -219,7 +222,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
           {isEdit && onDelete && (
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={() => setPendingConfirm("delete")}
               disabled={deleting}
               className="btn-danger flex items-center gap-1.5"
             >
@@ -247,7 +250,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
           {isEdit && onClearData && (
             <button
               type="button"
-              onClick={handleClearData}
+              onClick={() => setPendingConfirm("clearData")}
               disabled={clearLoading}
               className="btn-secondary flex items-center gap-1.5"
               title="清除浏览器数据"
@@ -640,6 +643,24 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
         </section>
       </div>
 
+      <ConfirmDialog
+        open={pendingConfirm === "delete"}
+        title="删除账号"
+        message="删除该账号？浏览器数据（cookie、缓存等）将永久删除，且不可恢复。"
+        confirmLabel="删除"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onCancel={() => setPendingConfirm(null)}
+      />
+      <ConfirmDialog
+        open={pendingConfirm === "clearData"}
+        title="清除浏览器数据"
+        message="清除该账号的浏览器数据（cookie、缓存等）？此操作不可恢复。"
+        confirmLabel="清除"
+        loading={clearLoading}
+        onConfirm={handleClearData}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </form>
   );
 }
