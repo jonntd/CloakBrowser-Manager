@@ -2,6 +2,7 @@
 name = "cloak-accounts"
 version = "0.1.0"
 description = "本地账号浏览器管理器 — 每个账号独立配置，有头浏览器窗口"
+license = "MIT"
 authors = ["CloakBrowser"]
 edition = "2021"
 
