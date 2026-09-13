@@ -27,11 +27,15 @@ SERVER_INFO = Path.home() / ".cloak-accounts" / "server.json"
 DEFAULT_BASE = "http://127.0.0.1:8797"
 
 
-def _base_url() -> str:
+def _server_info() -> dict:
     try:
-        return json.loads(SERVER_INFO.read_text())["base_url"]
+        return json.loads(SERVER_INFO.read_text())
     except Exception:
-        return DEFAULT_BASE
+        return {}
+
+
+def _base_url() -> str:
+    return _server_info().get("base_url") or DEFAULT_BASE
 
 
 def _req(method: str, path: str, body: dict | None = None) -> Any:
@@ -40,11 +44,21 @@ def _req(method: str, path: str, body: dict | None = None) -> Any:
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
+    # The app's API requires the per-run bearer token it publishes in
+    # server.json (owner-only file). Older app versions ignore the header.
+    token = _server_info().get("token")
+    if token:
+        req.add_header("X-Auth-Token", token)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             text = r.read().decode()
             return json.loads(text) if text.strip() else {}
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise RuntimeError(
+                "CloakAccounts 拒绝了请求（401，token 不匹配）。"
+                "请重启桌面应用以刷新 ~/.cloak-accounts/server.json 后重试。"
+            ) from None
         raise RuntimeError(f"HTTP {e.code}: {e.read().decode()}") from None
     except urllib.error.URLError as e:
         raise RuntimeError(

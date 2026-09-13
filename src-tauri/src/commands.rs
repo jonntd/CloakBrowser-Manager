@@ -139,7 +139,7 @@ pub fn clear_all_cache(launcher: State<'_, Arc<Launcher>>) -> Result<ClearCacheR
             skipped_running += 1;
             continue;
         }
-        freed_bytes += store::clear_cache(std::path::Path::new(&a.user_data_dir));
+        freed_bytes += store::clear_cache(std::path::Path::new(&a.user_data_dir))?;
         cleared += 1;
     }
     Ok(ClearCacheResult {
@@ -152,6 +152,7 @@ pub fn clear_all_cache(launcher: State<'_, Arc<Launcher>>) -> Result<ClearCacheR
 #[tauri::command]
 pub fn clear_account_data(id: String) -> Result<(), String> {
     let account = store::get_account(&id)?;
+    store::ensure_profile_contained(&account.user_data_dir)?;
     let dir = std::path::Path::new(&account.user_data_dir);
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|e| format!("清除浏览器数据失败: {e}"))?;

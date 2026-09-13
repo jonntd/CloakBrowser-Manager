@@ -58,10 +58,11 @@ npm run tauri:dev
 ```
 ~/.cloak-accounts/
   accounts.json          # 账号元数据
+  server.json            # 内嵌 HTTP API 地址 + 每次运行的鉴权 token（0600）
   endpoints.json         # 运行中浏览器的 CDP 端点清单（自动更新）
   profiles/<uuid>/       # 每账号独立 Chromium 用户数据
   logs/<uuid>.log        # 每账号 launcher 日志（含 CDP_PORT）
-  tmp/<uuid>.json        # 启动时临时传给 launcher 的配置
+  tmp/<uuid>.json        # 启动时临时传给 launcher 的配置（0600，启动后即删）
 ```
 
 ## 用 Claude / 外部工具控制浏览器（CDP）
@@ -116,13 +117,17 @@ claude mcp add cloak-accounts -- python3 mcp-server/cloak_accounts_mcp.py
 之后直接对 Claude 说「启动账号 X 并打开某站」即可。详见
 [mcp-server/README.md](mcp-server/README.md)。
 
-也可不经 MCP，直接调 HTTP API：
+也可不经 MCP，直接调 HTTP API。API 需要 `~/.cloak-accounts/server.json` 里的
+`token`（`X-Auth-Token` 头），且 Host 头必须是 `127.0.0.1:8797`：
 
 ```bash
-curl http://127.0.0.1:8797/accounts
-curl -X POST http://127.0.0.1:8797/accounts/<id或名称>/start -d '{"url":"https://example.com"}'
-curl http://127.0.0.1:8797/endpoints
-curl -X POST http://127.0.0.1:8797/accounts/<id或名称>/stop
+BASE=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.cloak-accounts/server.json')))['base_url'])")
+TOK=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.cloak-accounts/server.json')))['token'])")
+
+curl -H "X-Auth-Token: $TOK" $BASE/accounts
+curl -H "X-Auth-Token: $TOK" -X POST $BASE/accounts/<id或名称>/start -d '{"url":"https://example.com"}'
+curl -H "X-Auth-Token: $TOK" $BASE/endpoints
+curl -H "X-Auth-Token: $TOK" -X POST $BASE/accounts/<id或名称>/stop
 ```
 
 ## 架构

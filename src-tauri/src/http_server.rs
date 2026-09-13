@@ -3,8 +3,11 @@
 //! shares the one `Launcher` with the Tauri commands, so start/stop state and
 //! CDP port allocation stay consistent across the GUI and the API.
 //!
-//! Bound to 127.0.0.1 only. No auth — same trust model as the CDP endpoints it
-//! exposes; do not forward the port off-host.
+//! Bound to 127.0.0.1 only. Every request must carry the per-run bearer token
+//! from `~/.cloak-accounts/server.json` (owner-only file) and a loopback Host
+//! header — this keeps web-page CSRF and DNS-rebinding from reaching an API
+//! that can launch browsers and delete profile data. Do not forward the port
+//! off-host.
 
 use crate::commands;
 use crate::launcher::Launcher;
@@ -27,21 +30,34 @@ pub fn serve(launcher: Arc<Launcher>) {
             return;
         }
     };
-    write_server_info(DEFAULT_PORT);
+    // One random bearer token per app run. Requiring it (plus the Host check
+    // below) is what stops a malicious web page from forging POSTs to this
+    // API: it cannot read server.json, and cross-origin requests cannot set
+    // custom headers without a CORS preflight we never answer.
+    let token = uuid::Uuid::new_v4().to_string();
+    write_server_info(DEFAULT_PORT, &token);
     eprintln!("[http] account API listening on http://{addr}");
 
     for mut req in server.incoming_requests() {
-        let resp = handle(&launcher, &mut req);
+        let resp = match authorize(req.headers(), DEFAULT_PORT, &token) {
+            Ok(()) => handle(&launcher, &mut req),
+            Err((code, msg)) => err(code, msg),
+        };
         let _ = req.respond(resp);
     }
 }
 
-/// Advertise the API address so the MCP server can auto-discover it.
-fn write_server_info(port: u16) {
+/// Advertise the API address + auth token so the MCP server can auto-discover
+/// both. Owner-only permissions (0600 on Unix) since the token gates the API.
+fn write_server_info(port: u16, token: &str) {
     let path = store::data_dir().join("server.json");
-    let body = format!("{{\n  \"port\": {port},\n  \"base_url\": \"http://127.0.0.1:{port}\"\n}}\n");
+    let body = serde_json::json!({
+        "port": port,
+        "base_url": format!("http://127.0.0.1:{port}"),
+        "token": token,
+    });
     let _ = std::fs::create_dir_all(store::data_dir());
-    let _ = std::fs::write(path, body);
+    let _ = store::write_private(&path, &body.to_string());
 }
 
 fn json(status: u16, body: String) -> Resp {
@@ -64,6 +80,42 @@ fn err(status: u16, msg: &str) -> Resp {
         status,
         format!("{{\"error\":{}}}", serde_json::to_string(msg).unwrap()),
     )
+}
+
+fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str())
+}
+
+/// Length-independent byte comparison so token checks don't leak timing.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |diff, (x, y)| diff | (x ^ y))
+        == 0
+}
+
+type AuthError = (u16, &'static str);
+
+/// Gate every request on a loopback Host header and the per-run bearer token.
+/// The Host check blocks DNS-rebinding browsers (whose Host would be the
+/// attacker's domain); the token blocks same-origin CSRF from web pages.
+fn authorize(headers: &[Header], port: u16, token: &str) -> Result<(), AuthError> {
+    let host = header_value(headers, "Host").unwrap_or("");
+    let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    if !allowed.iter().any(|h| h == host) {
+        return Err((403, "invalid host header"));
+    }
+    let presented = header_value(headers, "X-Auth-Token").unwrap_or("");
+    if !ct_eq(presented.as_bytes(), token.as_bytes()) {
+        return Err((401, "missing or invalid auth token (see server.json)"));
+    }
+    Ok(())
 }
 
 /// Resolve an account key that may be either an id or a (unique) name.
@@ -219,8 +271,13 @@ fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
                     skipped += 1;
                     continue;
                 }
-                freed += store::clear_cache(std::path::Path::new(&a.user_data_dir));
-                cleared += 1;
+                match store::clear_cache(std::path::Path::new(&a.user_data_dir)) {
+                    Ok(bytes) => {
+                        freed += bytes;
+                        cleared += 1;
+                    }
+                    Err(e) => return err(500, &e),
+                }
             }
             json(
                 200,
@@ -272,4 +329,53 @@ fn parse_url_field(body: &str) -> Option<String> {
         .and_then(|u| u.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hdr(name: &str, value: &str) -> Header {
+        Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn authorize_accepts_loopback_host_and_matching_token() {
+        let headers = [hdr("Host", "127.0.0.1:8797"), hdr("X-Auth-Token", "tok-1")];
+        assert!(authorize(&headers, 8797, "tok-1").is_ok());
+        let headers = [hdr("Host", "localhost:8797"), hdr("X-Auth-Token", "tok-1")];
+        assert!(authorize(&headers, 8797, "tok-1").is_ok());
+    }
+
+    #[test]
+    fn authorize_rejects_missing_or_wrong_token() {
+        let headers = [hdr("Host", "127.0.0.1:8797")];
+        assert_eq!(authorize(&headers, 8797, "tok-1").unwrap_err().0, 401);
+        let headers = [
+            hdr("Host", "127.0.0.1:8797"),
+            hdr("X-Auth-Token", "wrong-token"),
+        ];
+        assert_eq!(authorize(&headers, 8797, "tok-1").unwrap_err().0, 401);
+    }
+
+    #[test]
+    fn authorize_rejects_rebound_or_missing_host() {
+        // DNS-rebinding (attacker's domain as Host), even with a valid token.
+        let headers = [
+            hdr("Host", "evil.example:8797"),
+            hdr("X-Auth-Token", "tok-1"),
+        ];
+        assert_eq!(authorize(&headers, 8797, "tok-1").unwrap_err().0, 403);
+        // No Host header at all (HTTP/1.0 style) — refuse.
+        let headers = [hdr("X-Auth-Token", "tok-1")];
+        assert_eq!(authorize(&headers, 8797, "tok-1").unwrap_err().0, 403);
+    }
+
+    #[test]
+    fn ct_eq_matches_only_identical_inputs() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(ct_eq(b"", b""));
+    }
 }

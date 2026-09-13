@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Best-effort sweep of credential-bearing leftovers from crashed sessions.
+    store::clean_stale_tmp();
+
     // Single process manager shared by the GUI (Tauri commands) and the local
     // HTTP account API (which the MCP server / Claude talks to).
     let launcher = Arc::new(Launcher::new());

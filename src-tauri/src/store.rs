@@ -19,6 +19,52 @@ pub fn profiles_dir() -> PathBuf {
     data_dir().join("profiles")
 }
 
+/// Write a secrets-bearing file (server.json token, per-launch account JSON
+/// with proxy credentials) owner-only. Unix enforces 0600 at creation; other
+/// platforms keep default permissions.
+pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
+/// Remove stale per-launch account JSON files under tmp/ (they carry proxy
+/// credentials). Only files older than an hour are removed so a concurrently
+/// launching app instance's in-flight launch is never disturbed.
+pub fn clean_stale_tmp() {
+    let tmp = data_dir().join("tmp");
+    let Ok(entries) = fs::read_dir(&tmp) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t <= cutoff)
+                .unwrap_or(false);
+            if stale {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
 fn ensure_dirs() -> Result<(), String> {
     fs::create_dir_all(data_dir()).map_err(|e| format!("创建数据目录失败: {e}"))?;
     fs::create_dir_all(profiles_dir()).map_err(|e| format!("创建 profiles 目录失败: {e}"))?;
@@ -207,6 +253,21 @@ pub fn update_account(id: &str, payload: AccountUpdate) -> Result<Account, Strin
     Ok(result)
 }
 
+/// Refuse destructive filesystem operations on any path outside the
+/// app-managed profiles dir. `user_data_dir` is read back from accounts.json,
+/// so a hand-edited store could otherwise point remove/clear operations at
+/// arbitrary directories.
+pub fn ensure_profile_contained(user_data_dir: &str) -> Result<(), String> {
+    let dir = Path::new(user_data_dir);
+    if dir.starts_with(profiles_dir()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "user_data_dir 不在应用 profiles 目录内，已拒绝删除/清理操作: {user_data_dir}"
+        ))
+    }
+}
+
 pub fn remove_account(id: &str) -> Result<Account, String> {
     let mut store = load()?;
     let idx = store
@@ -214,7 +275,9 @@ pub fn remove_account(id: &str) -> Result<Account, String> {
         .iter()
         .position(|a| a.id == id)
         .ok_or_else(|| format!("账号不存在: {id}"))?;
-    let account = store.accounts.remove(idx);
+    let account = store.accounts[idx].clone();
+    ensure_profile_contained(&account.user_data_dir)?;
+    store.accounts.remove(idx);
     save(&store)?;
 
     let dir = Path::new(&account.user_data_dir);
@@ -261,7 +324,10 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 /// Delete cache subdirs under `user_data_dir` (keeps cookies). Returns bytes freed.
-pub fn clear_cache(user_data_dir: &Path) -> u64 {
+/// Refuses paths outside the app-managed profiles dir (defense against a
+/// hand-edited accounts.json pointing at arbitrary directories).
+pub fn clear_cache(user_data_dir: &Path) -> Result<u64, String> {
+    ensure_profile_contained(&user_data_dir.to_string_lossy())?;
     let mut freed = 0;
     for rel in CACHE_SUBPATHS {
         let p = user_data_dir.join(rel);
@@ -270,7 +336,7 @@ pub fn clear_cache(user_data_dir: &Path) -> u64 {
             let _ = fs::remove_dir_all(&p);
         }
     }
-    freed
+    Ok(freed)
 }
 
 fn empty_to_none(v: Option<String>) -> Option<String> {
@@ -368,6 +434,38 @@ mod tests {
             remove_account(&a.id).unwrap();
             assert!(!Path::new(&dir).exists());
             assert!(list_accounts().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn remove_rejects_user_data_dir_outside_profiles() {
+        with_temp_home(|| {
+            let outside = std::env::temp_dir().join(format!("cloak-outside-{}", Uuid::new_v4()));
+            fs::create_dir_all(&outside).unwrap();
+            let a = create_account(AccountCreate {
+                name: "X".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            // Tamper the stored dir the way a hand-edited accounts.json would.
+            let mut store = load().unwrap();
+            store.accounts[0].user_data_dir = outside.to_string_lossy().to_string();
+            save(&store).unwrap();
+
+            assert!(remove_account(&a.id).is_err());
+            assert!(outside.exists(), "拒绝后目标目录必须原样保留");
+            let _ = fs::remove_dir_all(&outside);
+        });
+    }
+
+    #[test]
+    fn clear_cache_rejects_user_data_dir_outside_profiles() {
+        with_temp_home(|| {
+            let outside = std::env::temp_dir().join(format!("cloak-outside-{}", Uuid::new_v4()));
+            fs::create_dir_all(&outside).unwrap();
+            assert!(clear_cache(&outside).is_err());
+            assert!(outside.exists());
+            let _ = fs::remove_dir_all(&outside);
         });
     }
 }

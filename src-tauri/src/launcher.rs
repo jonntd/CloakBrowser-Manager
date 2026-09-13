@@ -75,13 +75,16 @@ impl Launcher {
             return Err("该账号浏览器已在运行".into());
         }
 
-        // Write a temp account JSON for the launcher script
+        // Write a temp account JSON for the launcher script. It carries the
+        // proxy credentials, so it's written owner-only (0600 on Unix) and
+        // deleted as soon as the launcher has read it (after the grace window).
         let tmp_dir = store::data_dir().join("tmp");
         fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
         let account_file = tmp_dir.join(format!("{}.json", account.id));
         let json = serde_json::to_string_pretty(account)
             .map_err(|e| format!("序列化账号失败: {e}"))?;
-        fs::write(&account_file, json).map_err(|e| format!("写入临时账号文件失败: {e}"))?;
+        store::write_private(&account_file, &json)
+            .map_err(|e| format!("写入临时账号文件失败: {e}"))?;
 
         let launcher = find_launcher_script()?;
         let python = find_python()?;
@@ -161,6 +164,10 @@ impl Launcher {
                 None => break, // no longer tracked (stopped concurrently)
             }
         }
+        // The launcher reads the account file at process start (well inside the
+        // grace window), so the credential-bearing temp file can go now —
+        // whether the launch succeeded or failed fast.
+        let _ = fs::remove_file(&account_file);
         if let Some(status) = failed {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             return Err(friendly_launch_error(&log, status));

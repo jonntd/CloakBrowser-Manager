@@ -67,10 +67,15 @@ Claude 再用 CDP（Playwright `connect_over_cdp` 或 chrome-cdp）控制该账�
 
 ```bash
 BASE=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.cloak-accounts/server.json')))['base_url'])")
-curl $BASE/accounts
-curl -X POST $BASE/accounts/<id或名称>/start -d '{"url":"https://example.com"}'
-curl $BASE/endpoints
-curl -X POST $BASE/accounts/<id或名称>/stop
+TOK=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.cloak-accounts/server.json')))['token'])")
+
+curl -H "X-Auth-Token: $TOK" $BASE/accounts
+curl -H "X-Auth-Token: $TOK" -X POST $BASE/accounts/<id或名称>/start -d '{"url":"https://example.com"}'
+curl -H "X-Auth-Token: $TOK" $BASE/endpoints
+curl -H "X-Auth-Token: $TOK" -X POST $BASE/accounts/<id或名称>/stop
 ```
 
-> 安全：HTTP API 与 CDP 端点都只绑定 `127.0.0.1`，无鉴权。不要转发到公网；跨机器用 SSH 隧道。
+> 安全：HTTP API 只绑定 `127.0.0.1`，且要求 `server.json`（0600）中的 token
+> （`X-Auth-Token` 头）与 loopback Host 头——网页 CSRF / DNS rebinding 无法触达。
+> token 随应用每次重启刷新，本 MCP 服务会自动读取并携带。CDP 端口仅本机可连；
+> 跨机器用 SSH 隧道，不要转发到公网。
