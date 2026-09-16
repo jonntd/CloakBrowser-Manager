@@ -28,6 +28,9 @@ debug
 # ReCode local database
 .recode
 
+# ZCode local session metadata
+.zcode/
+
 # Tauri / Rust
 src-tauri/target/
 src-tauri/gen/
