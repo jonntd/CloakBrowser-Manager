@@ -23,6 +23,7 @@ rand = "0.8"
 dirs = "5"
 libc = "0.2"
 tiny_http = "0.12"
+thiserror = "2"
 
 [profile.release]
 panic = "abort"

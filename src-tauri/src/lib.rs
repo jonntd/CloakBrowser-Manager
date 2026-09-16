@@ -1,10 +1,13 @@
 mod commands;
+mod error;
 mod http_server;
 mod launcher;
 mod models;
+mod service;
 mod store;
 
 use launcher::Launcher;
+use service::AccountService;
 use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12,16 +15,17 @@ pub fn run() {
     // Best-effort sweep of credential-bearing leftovers from crashed sessions.
     store::clean_stale_tmp();
 
-    // Single process manager shared by the GUI (Tauri commands) and the local
-    // HTTP account API (which the MCP server / Claude talks to).
     let launcher = Arc::new(Launcher::new());
+    let accounts = Arc::new(AccountService::new());
     let server_launcher = launcher.clone();
+    let server_accounts = accounts.clone();
     std::thread::spawn(move || {
-        http_server::serve(server_launcher);
+        http_server::serve(server_launcher, server_accounts);
     });
 
     tauri::Builder::default()
         .manage(launcher)
+        .manage(accounts)
         .invoke_handler(tauri::generate_handler![
             commands::create_account,
             commands::list_accounts,

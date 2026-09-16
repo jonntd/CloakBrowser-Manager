@@ -1,3 +1,4 @@
+use crate::error::{AppError, AppResult};
 use crate::models::{Account, AccountCreate, AccountStore, AccountUpdate, Tag};
 use chrono::Utc;
 use rand::Rng;
@@ -76,7 +77,7 @@ pub fn load() -> Result<AccountStore, String> {
     let path = store_path();
     if !path.exists() {
         let empty = AccountStore::default();
-        save(&empty)?;
+        save(&empty).map_err(|e| e.to_string())?;
         return Ok(empty);
     }
     let text = fs::read_to_string(&path).map_err(|e| format!("读取账号文件失败: {e}"))?;
@@ -86,8 +87,10 @@ pub fn load() -> Result<AccountStore, String> {
     serde_json::from_str(&text).map_err(|e| format!("解析账号文件失败: {e}"))
 }
 
-pub fn save(store: &AccountStore) -> Result<(), String> {
-    ensure_dirs()?;
+/// Persist the store atomically (tmp + rename), stripping runtime status.
+/// Called by `AccountService` after each mutation under its store lock.
+pub fn save(store: &AccountStore) -> AppResult<()> {
+    ensure_dirs().map_err(AppError::Io)?;
     let path = store_path();
     let tmp = path.with_extension("json.tmp");
     // Strip runtime status before persisting
@@ -95,10 +98,10 @@ pub fn save(store: &AccountStore) -> Result<(), String> {
     for a in &mut clean.accounts {
         a.status = "stopped".into();
     }
-    let text =
-        serde_json::to_string_pretty(&clean).map_err(|e| format!("序列化账号失败: {e}"))?;
-    fs::write(&tmp, text).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("保存账号文件失败: {e}"))?;
+    let text = serde_json::to_string_pretty(&clean)
+        .map_err(|e| AppError::Io(format!("序列化账号失败: {e}")))?;
+    fs::write(&tmp, text).map_err(|e| AppError::Io(format!("写入临时文件失败: {e}")))?;
+    fs::rename(&tmp, &path).map_err(|e| AppError::Io(format!("保存账号文件失败: {e}")))?;
     Ok(())
 }
 
@@ -110,16 +113,15 @@ fn random_seed() -> i64 {
     rand::thread_rng().gen_range(10_000..100_000)
 }
 
-pub fn create_account(payload: AccountCreate) -> Result<Account, String> {
-    let mut store = load()?;
-    let id = Uuid::new_v4().to_string();
+/// Core account construction shared by the service create path.
+fn build_account(id: &str, payload: AccountCreate) -> Result<Account, String> {
     let seed = payload.fingerprint_seed.unwrap_or_else(random_seed);
-    let user_data_dir = profiles_dir().join(&id);
+    let user_data_dir = profiles_dir().join(id);
     fs::create_dir_all(&user_data_dir).map_err(|e| format!("创建 user_data_dir 失败: {e}"))?;
 
     let now = now_iso();
     let account = Account {
-        id: id.clone(),
+        id: id.to_string(),
         name: payload.name.trim().to_string(),
         site: empty_to_none(payload.site),
         notes: empty_to_none(payload.notes),
@@ -155,37 +157,44 @@ pub fn create_account(payload: AccountCreate) -> Result<Account, String> {
     if account.name.is_empty() {
         return Err("账号名称不能为空".into());
     }
-
-    store.accounts.insert(0, account.clone());
-    save(&store)?;
     Ok(account)
 }
 
-pub fn list_accounts() -> Result<Vec<Account>, String> {
-    Ok(load()?.accounts)
+/// Service-path create: append to the caller-held store (already under the
+/// service lock) and create the profile dir. Persistence is the caller's job
+/// so a dir-creation failure can't leave a half-persisted store.
+pub fn create_account_in(store: &mut AccountStore, payload: AccountCreate) -> AppResult<Account> {
+    let id = Uuid::new_v4().to_string();
+    let account = build_account(&id, payload).map_err(AppError::Validation)?; // name validation etc.
+    fs::create_dir_all(&account.user_data_dir)
+        .map_err(|e| AppError::Io(format!("创建 user_data_dir 失败: {e}")))?;
+    store.accounts.insert(0, account.clone());
+    Ok(account)
 }
 
-pub fn get_account(id: &str) -> Result<Account, String> {
-    let store = load()?;
-    store
-        .accounts
-        .into_iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("账号不存在: {id}"))
-}
-
-pub fn update_account(id: &str, payload: AccountUpdate) -> Result<Account, String> {
-    let mut store = load()?;
+/// Service-path update: apply to the caller-held store (already under the
+/// service lock). Persistence is the caller's job.
+pub fn update_account_in(
+    store: &mut AccountStore,
+    id: &str,
+    payload: AccountUpdate,
+) -> AppResult<Account> {
     let idx = store
         .accounts
         .iter()
         .position(|a| a.id == id)
-        .ok_or_else(|| format!("账号不存在: {id}"))?;
+        .ok_or_else(|| AppError::NotFound(format!("账号不存在: {id}")))?;
 
     let a = &mut store.accounts[idx];
+    apply_update(a, payload)?;
+    a.updated_at = now_iso();
+    Ok(a.clone())
+}
+
+fn apply_update(a: &mut Account, payload: AccountUpdate) -> AppResult<()> {
     if let Some(v) = payload.name {
         if v.trim().is_empty() {
-            return Err("账号名称不能为空".into());
+            return Err(AppError::Validation("账号名称不能为空".into()));
         }
         a.name = v.trim().to_string();
     }
@@ -246,11 +255,7 @@ pub fn update_account(id: &str, payload: AccountUpdate) -> Result<Account, Strin
     if let Some(v) = payload.launch_args {
         a.launch_args = v;
     }
-    a.updated_at = now_iso();
-
-    let result = a.clone();
-    save(&store)?;
-    Ok(result)
+    Ok(())
 }
 
 /// Refuse destructive filesystem operations on any path outside the
@@ -266,25 +271,6 @@ pub fn ensure_profile_contained(user_data_dir: &str) -> Result<(), String> {
             "user_data_dir 不在应用 profiles 目录内，已拒绝删除/清理操作: {user_data_dir}"
         ))
     }
-}
-
-pub fn remove_account(id: &str) -> Result<Account, String> {
-    let mut store = load()?;
-    let idx = store
-        .accounts
-        .iter()
-        .position(|a| a.id == id)
-        .ok_or_else(|| format!("账号不存在: {id}"))?;
-    let account = store.accounts[idx].clone();
-    ensure_profile_contained(&account.user_data_dir)?;
-    store.accounts.remove(idx);
-    save(&store)?;
-
-    let dir = Path::new(&account.user_data_dir);
-    if dir.exists() {
-        let _ = fs::remove_dir_all(dir);
-    }
-    Ok(account)
 }
 
 /// Cache subdirectories (relative to a profile's user_data_dir) safe to delete
@@ -326,7 +312,7 @@ fn dir_size(path: &Path) -> u64 {
 /// Delete cache subdirs under `user_data_dir` (keeps cookies). Returns bytes freed.
 /// Refuses paths outside the app-managed profiles dir (defense against a
 /// hand-edited accounts.json pointing at arbitrary directories).
-pub fn clear_cache(user_data_dir: &Path) -> Result<u64, String> {
+pub fn clear_cache(user_data_dir: &Path) -> AppResult<u64> {
     ensure_profile_contained(&user_data_dir.to_string_lossy())?;
     let mut freed = 0;
     for rel in CACHE_SUBPATHS {
@@ -363,6 +349,7 @@ fn _tag_typecheck() -> Tag {
 mod tests {
     use super::*;
     use crate::models::AccountCreate;
+    use crate::service::AccountService;
     use std::sync::Mutex;
 
     // Serialize tests that touch the real home-dir store path.
@@ -388,16 +375,18 @@ mod tests {
     #[test]
     fn create_and_list_account() {
         with_temp_home(|| {
-            let a = create_account(AccountCreate {
-                name: "账号A".into(),
-                site: Some("example.com".into()),
-                ..Default::default()
-            })
-            .unwrap();
+            let service = AccountService::new();
+            let a = service
+                .create_account(AccountCreate {
+                    name: "账号A".into(),
+                    site: Some("example.com".into()),
+                    ..Default::default()
+                })
+                .unwrap();
             assert_eq!(a.name, "账号A");
             assert!(a.fingerprint_seed >= 10_000);
             assert!(Path::new(&a.user_data_dir).exists());
-            let list = list_accounts().unwrap();
+            let list = service.list_accounts().unwrap();
             assert_eq!(list.len(), 1);
             assert_eq!(list[0].id, a.id);
         });
@@ -406,16 +395,19 @@ mod tests {
     #[test]
     fn each_account_has_unique_dir() {
         with_temp_home(|| {
-            let a = create_account(AccountCreate {
-                name: "A".into(),
-                ..Default::default()
-            })
-            .unwrap();
-            let b = create_account(AccountCreate {
-                name: "B".into(),
-                ..Default::default()
-            })
-            .unwrap();
+            let service = AccountService::new();
+            let a = service
+                .create_account(AccountCreate {
+                    name: "A".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let b = service
+                .create_account(AccountCreate {
+                    name: "B".into(),
+                    ..Default::default()
+                })
+                .unwrap();
             assert_ne!(a.user_data_dir, b.user_data_dir);
             assert_ne!(a.id, b.id);
         });
@@ -424,16 +416,18 @@ mod tests {
     #[test]
     fn remove_deletes_dir() {
         with_temp_home(|| {
-            let a = create_account(AccountCreate {
-                name: "ToDelete".into(),
-                ..Default::default()
-            })
-            .unwrap();
+            let service = AccountService::new();
+            let a = service
+                .create_account(AccountCreate {
+                    name: "ToDelete".into(),
+                    ..Default::default()
+                })
+                .unwrap();
             let dir = a.user_data_dir.clone();
             assert!(Path::new(&dir).exists());
-            remove_account(&a.id).unwrap();
+            service.remove_account(&a.id).unwrap();
             assert!(!Path::new(&dir).exists());
-            assert!(list_accounts().unwrap().is_empty());
+            assert!(service.list_accounts().unwrap().is_empty());
         });
     }
 
@@ -442,17 +436,7 @@ mod tests {
         with_temp_home(|| {
             let outside = std::env::temp_dir().join(format!("cloak-outside-{}", Uuid::new_v4()));
             fs::create_dir_all(&outside).unwrap();
-            let a = create_account(AccountCreate {
-                name: "X".into(),
-                ..Default::default()
-            })
-            .unwrap();
-            // Tamper the stored dir the way a hand-edited accounts.json would.
-            let mut store = load().unwrap();
-            store.accounts[0].user_data_dir = outside.to_string_lossy().to_string();
-            save(&store).unwrap();
-
-            assert!(remove_account(&a.id).is_err());
+            assert!(ensure_profile_contained(&outside.to_string_lossy()).is_err());
             assert!(outside.exists(), "拒绝后目标目录必须原样保留");
             let _ = fs::remove_dir_all(&outside);
         });

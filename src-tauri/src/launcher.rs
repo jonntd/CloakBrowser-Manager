@@ -81,8 +81,8 @@ impl Launcher {
         let tmp_dir = store::data_dir().join("tmp");
         fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
         let account_file = tmp_dir.join(format!("{}.json", account.id));
-        let json = serde_json::to_string_pretty(account)
-            .map_err(|e| format!("序列化账号失败: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(account).map_err(|e| format!("序列化账号失败: {e}"))?;
         store::write_private(&account_file, &json)
             .map_err(|e| format!("写入临时账号文件失败: {e}"))?;
 

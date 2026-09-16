@@ -10,8 +10,10 @@
 //! off-host.
 
 use crate::commands;
+use crate::error::AppError;
 use crate::launcher::Launcher;
 use crate::models::{AccountCreate, AccountUpdate};
+use crate::service::AccountService;
 use crate::store;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -21,7 +23,7 @@ const DEFAULT_PORT: u16 = 8797;
 
 type Resp = Response<Cursor<Vec<u8>>>;
 
-pub fn serve(launcher: Arc<Launcher>) {
+pub fn serve(launcher: Arc<Launcher>, accounts: Arc<AccountService>) {
     let addr = format!("127.0.0.1:{DEFAULT_PORT}");
     let server = match Server::http(&addr) {
         Ok(s) => s,
@@ -40,7 +42,7 @@ pub fn serve(launcher: Arc<Launcher>) {
 
     for mut req in server.incoming_requests() {
         let resp = match authorize(req.headers(), DEFAULT_PORT, &token) {
-            Ok(()) => handle(&launcher, &mut req),
+            Ok(()) => handle(&launcher, &accounts, &mut req),
             Err((code, msg)) => err(code, msg),
         };
         let _ = req.respond(resp);
@@ -61,8 +63,11 @@ fn write_server_info(port: u16, token: &str) {
 }
 
 fn json(status: u16, body: String) -> Resp {
-    let header =
-        Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
+    let header = Header::from_bytes(
+        &b"Content-Type"[..],
+        &b"application/json; charset=utf-8"[..],
+    )
+    .unwrap();
     Response::from_string(body)
         .with_status_code(status)
         .with_header(header)
@@ -119,18 +124,15 @@ fn authorize(headers: &[Header], port: u16, token: &str) -> Result<(), AuthError
 }
 
 /// Resolve an account key that may be either an id or a (unique) name.
-fn resolve_id(key: &str) -> Option<String> {
-    let accounts = store::list_accounts().ok()?;
-    if accounts.iter().any(|a| a.id == key) {
-        return Some(key.to_string());
-    }
-    accounts
-        .iter()
-        .find(|a| a.name == key)
-        .map(|a| a.id.clone())
+fn resolve_id(service: &AccountService, key: &str) -> Option<String> {
+    service.resolve_id(key)
 }
 
-fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
+fn api_error(error: AppError) -> Resp {
+    err(error.http_status(), &error.to_string())
+}
+
+fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> Resp {
     let method = req.method().clone();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
@@ -153,68 +155,70 @@ fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
 
         (Method::Get, ["accounts"]) => {
             launcher.reap();
-            match store::list_accounts() {
+            match accounts.list_accounts() {
                 Ok(mut accounts) => {
                     for a in &mut accounts {
                         a.status = launcher.status_of(&a.id);
                     }
                     ok(&accounts)
                 }
-                Err(e) => err(500, &e),
+                Err(e) => api_error(e),
             }
         }
 
         (Method::Post, ["accounts"]) => match serde_json::from_str::<AccountCreate>(&body) {
-            Ok(payload) => match store::create_account(payload) {
+            Ok(payload) => match accounts.create_account(payload) {
                 Ok(a) => ok(&a),
-                Err(e) => err(400, &e),
+                Err(e) => api_error(e),
             },
             Err(e) => err(400, &format!("invalid body: {e}")),
         },
 
-        (Method::Get, ["accounts", key]) => match resolve_id(key) {
-            Some(id) => match store::get_account(&id) {
+        (Method::Get, ["accounts", key]) => match resolve_id(accounts, key) {
+            Some(id) => match accounts.get_account(&id) {
                 Ok(mut a) => {
                     a.status = launcher.status_of(&a.id);
                     ok(&a)
                 }
-                Err(e) => err(404, &e),
+                Err(e) => api_error(e),
             },
             None => err(404, "account not found"),
         },
 
-        (Method::Patch, ["accounts", key]) => match resolve_id(key) {
+        (Method::Patch, ["accounts", key]) => match resolve_id(accounts, key) {
             Some(id) => match serde_json::from_str::<AccountUpdate>(&body) {
-                Ok(payload) => match store::update_account(&id, payload) {
+                Ok(payload) => match accounts.update_account(&id, payload) {
                     Ok(a) => ok(&a),
-                    Err(e) => err(400, &e),
+                    Err(e) => api_error(e),
                 },
                 Err(e) => err(400, &format!("invalid body: {e}")),
             },
             None => err(404, "account not found"),
         },
 
-        (Method::Delete, ["accounts", key]) => match resolve_id(key) {
+        (Method::Delete, ["accounts", key]) => match resolve_id(accounts, key) {
             Some(id) => {
                 launcher.stop_if_running(&id);
-                match store::remove_account(&id) {
+                match accounts.remove_account(&id) {
                     Ok(_) => json(200, "{\"ok\":true}".to_string()),
-                    Err(e) => err(400, &e),
+                    Err(e) => api_error(e),
                 }
             }
             None => err(404, "account not found"),
         },
 
-        (Method::Post, ["accounts", key, "start"]) => match resolve_id(key) {
+        (Method::Post, ["accounts", key, "start"]) => match resolve_id(accounts, key) {
             Some(id) => {
                 launcher.reap();
                 let url_opt = parse_url_field(&body);
-                match store::get_account(&id) {
+                match accounts.get_account(&id) {
                     Ok(account) => match launcher.open(&account, url_opt) {
                         Ok(pid) => {
                             let port = launcher.cdp_port_of(&id);
                             let cdp_url = port.map(|p| format!("http://127.0.0.1:{p}"));
-                            commands::write_endpoints_manifest(&commands::build_endpoints(launcher));
+                            commands::write_endpoints_manifest(&commands::build_endpoints(
+                                accounts, launcher,
+                            ));
                             json(
                                 200,
                                 format!(
@@ -222,24 +226,24 @@ fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
                                     serde_json::to_string(&id).unwrap(),
                                     pid,
                                     port.map(|p| p.to_string()).unwrap_or_else(|| "null".into()),
-                                    cdp_url
-                                        .map(|u| serde_json::to_string(&u).unwrap())
-                                        .unwrap_or_else(|| "null".into()),
+                                    cdp_url.map(|u| serde_json::to_string(&u).unwrap()).unwrap_or_else(|| "null".into()),
                                 ),
                             )
                         }
                         Err(e) => err(400, &e),
                     },
-                    Err(e) => err(404, &e),
+                    Err(e) => api_error(e),
                 }
             }
             None => err(404, "account not found"),
         },
 
-        (Method::Post, ["accounts", key, "stop"]) => match resolve_id(key) {
+        (Method::Post, ["accounts", key, "stop"]) => match resolve_id(accounts, key) {
             Some(id) => match launcher.stop(&id) {
                 Ok(_) => {
-                    commands::write_endpoints_manifest(&commands::build_endpoints(launcher));
+                    commands::write_endpoints_manifest(&commands::build_endpoints(
+                        accounts, launcher,
+                    ));
                     json(200, "{\"ok\":true}".to_string())
                 }
                 Err(e) => err(400, &e),
@@ -249,24 +253,24 @@ fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
 
         (Method::Post, ["stop-all"]) => {
             let n = launcher.stop_all();
-            commands::write_endpoints_manifest(&commands::build_endpoints(launcher));
+            commands::write_endpoints_manifest(&commands::build_endpoints(accounts, launcher));
             json(200, format!("{{\"stopped\":{n}}}"))
         }
 
         (Method::Get, ["endpoints"]) => {
             launcher.reap();
-            let eps = commands::build_endpoints(launcher);
+            let eps = commands::build_endpoints(accounts, launcher);
             commands::write_endpoints_manifest(&eps);
             ok(&eps)
         }
 
         (Method::Post, ["clear-cache"]) => {
             launcher.reap();
-            let accounts = store::list_accounts().unwrap_or_default();
+            let account_list = accounts.list_accounts().unwrap_or_default();
             let mut cleared = 0usize;
             let mut skipped = 0usize;
             let mut freed = 0u64;
-            for a in &accounts {
+            for a in &account_list {
                 if launcher.status_of(&a.id) == "running" {
                     skipped += 1;
                     continue;
@@ -276,7 +280,7 @@ fn handle(launcher: &Launcher, req: &mut Request) -> Resp {
                         freed += bytes;
                         cleared += 1;
                     }
-                    Err(e) => return err(500, &e),
+                    Err(e) => return api_error(e),
                 }
             }
             json(
