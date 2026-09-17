@@ -18,6 +18,15 @@ def test_base_url_rejects_non_http(monkeypatch):
         mcp._base_url()
 
 
+def test_base_url_rejects_wrong_port_and_path(monkeypatch):
+    monkeypatch.setattr(mcp, "_server_info", lambda: {"base_url": "http://127.0.0.1:9999", "token": "x"})
+    with pytest.raises(mcp.CloakAccountsError, match="8797"):
+        mcp._base_url()
+    monkeypatch.setattr(mcp, "_server_info", lambda: {"base_url": "http://127.0.0.1:8797/api", "token": "x"})
+    with pytest.raises(mcp.CloakAccountsError, match="根路径"):
+        mcp._base_url()
+
+
 def test_safe_account_does_not_expose_secrets():
     result = mcp._safe_account(
         {

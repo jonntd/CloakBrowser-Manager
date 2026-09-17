@@ -51,10 +51,16 @@ def _base_url() -> str:
     if not isinstance(value, str):
         raise CloakAccountsError("server.json 的 base_url 必须是字符串。")
     parsed = urllib.parse.urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise CloakAccountsError("server.json 的 base_url 端口无效。") from None
     if parsed.scheme != "http" or parsed.hostname not in LOOPBACK_HOSTS:
         raise CloakAccountsError("出于安全原因，CloakAccounts API 只允许使用本机 HTTP 地址。")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.netloc:
-        raise CloakAccountsError("server.json 的 base_url 包含不允许的凭据或参数。")
+    if port != 8797 or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise CloakAccountsError("server.json 的 base_url 必须是本机 8797 端口，且不能包含凭据或参数。")
+    if parsed.path not in {"", "/"} or not parsed.netloc:
+        raise CloakAccountsError("server.json 的 base_url 必须指向本机 API 根路径。")
     return value.rstrip("/")
 
 
