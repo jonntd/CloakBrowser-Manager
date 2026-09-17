@@ -15,11 +15,12 @@ use crate::launcher::Launcher;
 use crate::models::{AccountCreate, AccountUpdate};
 use crate::service::AccountService;
 use crate::store;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const DEFAULT_PORT: u16 = 8797;
+const MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024;
 
 type Resp = Response<Cursor<Vec<u8>>>;
 
@@ -144,7 +145,13 @@ fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> 
         .collect();
 
     let mut body = String::new();
-    let _ = req.as_reader().read_to_string(&mut body);
+    let mut reader = req.as_reader().take(MAX_REQUEST_BODY_BYTES + 1);
+    if reader.read_to_string(&mut body).is_err() {
+        return err(400, "invalid request body");
+    }
+    if body.len() as u64 > MAX_REQUEST_BODY_BYTES {
+        return err(413, "request body too large");
+    }
 
     let seg_refs: Vec<&str> = segs.iter().map(|s| s.as_str()).collect();
     match (&method, seg_refs.as_slice()) {
@@ -289,6 +296,7 @@ fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> 
         }
 
         (Method::Post, ["clear-cache"]) => {
+            let _lifecycle = launcher.lock_lifecycle();
             launcher.reap();
             let account_list = accounts.list_accounts().unwrap_or_default();
             let mut cleared = 0usize;
