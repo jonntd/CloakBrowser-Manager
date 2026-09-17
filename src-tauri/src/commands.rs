@@ -109,7 +109,8 @@ pub fn remove_account(
     accounts: State<'_, Arc<AccountService>>,
     launcher: State<'_, Arc<Launcher>>,
 ) -> AppResult<()> {
-    launcher.stop_if_running(&id);
+    let _lifecycle = launcher.lock_lifecycle();
+    launcher.stop_if_running_unlocked(&id);
     accounts.remove_account(&id)?;
     write_endpoints_manifest(&build_endpoints(&accounts, &launcher));
     Ok(())
@@ -169,6 +170,7 @@ pub fn clear_all_cache(
     accounts: State<'_, Arc<AccountService>>,
     launcher: State<'_, Arc<Launcher>>,
 ) -> AppResult<ClearCacheResult> {
+    let _lifecycle = launcher.lock_lifecycle();
     launcher.reap();
     let mut cleared = 0;
     let mut skipped_running = 0;
@@ -194,6 +196,7 @@ pub fn clear_account_data(
     accounts: State<'_, Arc<AccountService>>,
     launcher: State<'_, Arc<Launcher>>,
 ) -> AppResult<()> {
+    let _lifecycle = launcher.lock_lifecycle();
     if launcher.is_running(&id) {
         return Err(crate::error::AppError::AlreadyRunning);
     }

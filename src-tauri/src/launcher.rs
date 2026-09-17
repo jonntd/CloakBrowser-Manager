@@ -28,13 +28,21 @@ struct Running {
 /// Tracks running account browsers: account_id -> Running.
 pub struct Launcher {
     running: Mutex<HashMap<String, Running>>,
+    /// Serializes lifecycle operations with destructive profile operations.
+    lifecycle: Mutex<()>,
 }
 
 impl Launcher {
     pub fn new() -> Self {
         Self {
             running: Mutex::new(HashMap::new()),
+            lifecycle: Mutex::new(()),
         }
+    }
+
+    /// Serialize lifecycle changes with profile-destructive operations.
+    pub fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lifecycle.lock().unwrap()
     }
 
     pub fn is_running(&self, id: &str) -> bool {
@@ -71,6 +79,7 @@ impl Launcher {
     }
 
     pub fn open(&self, account: &Account, url: Option<String>) -> Result<u32, String> {
+        let _lifecycle = self.lifecycle.lock().unwrap();
         if self.is_running(&account.id) {
             return Err("该账号浏览器已在运行".into());
         }
@@ -176,6 +185,12 @@ impl Launcher {
     }
 
     pub fn stop(&self, id: &str) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().unwrap();
+        self.stop_unlocked(id)
+    }
+
+    /// Stop an account while the caller already holds the lifecycle lock.
+    pub(crate) fn stop_unlocked(&self, id: &str) -> Result<(), String> {
         let running = self.running.lock().unwrap().remove(id);
         match running {
             Some(mut r) => {
@@ -186,12 +201,17 @@ impl Launcher {
         }
     }
 
-    pub fn stop_if_running(&self, id: &str) {
-        let _ = self.stop(id);
+    pub(crate) fn stop_if_running_unlocked(&self, id: &str) {
+        let _ = self.stop_unlocked(id);
     }
 
     /// Stop every running account browser. Returns the number stopped.
     pub fn stop_all(&self) -> usize {
+        let _lifecycle = self.lifecycle.lock().unwrap();
+        self.stop_all_unlocked()
+    }
+
+    fn stop_all_unlocked(&self) -> usize {
         // Drain out of the lock first so we don't hold it while waiting.
         // Only the Unix graceful-stop path needs the Vec itself to be mutable.
         #[cfg_attr(not(unix), allow(unused_mut))]

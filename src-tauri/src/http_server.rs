@@ -198,7 +198,8 @@ fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> 
 
         (Method::Delete, ["accounts", key]) => match resolve_id(accounts, key) {
             Some(id) => {
-                launcher.stop_if_running(&id);
+                let _lifecycle = launcher.lock_lifecycle();
+                launcher.stop_if_running_unlocked(&id);
                 match accounts.remove_account(&id) {
                     Ok(_) => json(200, "{\"ok\":true}".to_string()),
                     Err(e) => api_error(e),
@@ -274,6 +275,7 @@ fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> 
             }
             match resolve_id(accounts, key) {
                 Some(id) => {
+                    let _lifecycle = launcher.lock_lifecycle();
                     if launcher.is_running(&id) {
                         return api_error(AppError::AlreadyRunning);
                     }
