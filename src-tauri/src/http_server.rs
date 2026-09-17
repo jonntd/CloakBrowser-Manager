@@ -264,6 +264,28 @@ fn handle(launcher: &Launcher, accounts: &AccountService, req: &mut Request) -> 
             ok(&eps)
         }
 
+        (Method::Post, ["accounts", key, "clear-data"]) => {
+            let confirm = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| value.get("confirm").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            if !confirm {
+                return err(400, "confirm=true is required to clear account data");
+            }
+            match resolve_id(accounts, key) {
+                Some(id) => {
+                    if launcher.is_running(&id) {
+                        return api_error(AppError::AlreadyRunning);
+                    }
+                    match accounts.clear_account_data(&id) {
+                        Ok(()) => json(200, "{\"ok\":true}".to_string()),
+                        Err(e) => api_error(e),
+                    }
+                }
+                None => err(404, "account not found"),
+            }
+        }
+
         (Method::Post, ["clear-cache"]) => {
             launcher.reap();
             let account_list = accounts.list_accounts().unwrap_or_default();

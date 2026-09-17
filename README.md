@@ -105,8 +105,14 @@ const browser = await puppeteer.connect({ browserURL: "http://127.0.0.1:5100" })
 应用运行时会内嵌一个本地 **HTTP 账号 API**（`127.0.0.1:8797`，地址写在
 `~/.cloak-accounts/server.json`），GUI 与该 API 共享同一个进程管理器。
 
-在其上提供了一个 **MCP 服务**，让 Claude 直接以工具方式管理账号（列出 / 启动 /
-停止 / 拿 CDP 地址 / 新建），启动后再经 CDP 控制对应账号的浏览器。
+在其上提供了一个 **MCP 服务**，让 Claude 直接以工具方式管理账号、等待浏览器就绪并观察页面；复杂页面操作再通过账号绑定的 Playwright/CDP 连接完成。完整链路为：
+
+```text
+MCP stdio → cloak_accounts_mcp.py → Tauri HTTP API → AccountService / Launcher
+→ 独立 Chromium profile → CDP endpoint → Playwright / Puppeteer 页面控制
+```
+
+MCP 层会校验 loopback API、解析唯一账号、等待 CDP `/json/version` 就绪，并默认脱敏 `proxy`、profile 路径和启动参数。删除账号、清理 profile 等操作要求显式确认。
 
 一次性接入：
 

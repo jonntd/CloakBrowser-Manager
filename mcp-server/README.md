@@ -11,13 +11,14 @@ Claude ──MCP(stdio)──▶ cloak_accounts_mcp.py ──HTTP──▶ Cloak
 
 - CloakAccounts 桌面应用运行时会内嵌一个本地 HTTP 服务（账号 CRUD、启停、CDP 端点），
   地址写在 `~/.cloak-accounts/server.json`。
-- 本 MCP 服务是一层薄转发，把 Claude 的工具调用转成 HTTP 请求。
+- 本 MCP 服务是安全的本地编排层：校验 loopback API、解析唯一账号、等待 CDP 就绪，并可通过 Playwright 读取页面。
 - GUI 和 MCP 共享同一个进程管理器，启停状态、CDP 端口分配一致，不会互相冲突。
+- 账号返回结果会脱敏，不包含 proxy 凭据、profile 路径或 launch 参数。
 
 ## 依赖
 
 ```bash
-pip install mcp
+pip install -r mcp-server/requirements.txt
 ```
 
 （CloakAccounts 应用需处于运行状态——它托管 API 并持有浏览器进程。）
@@ -45,12 +46,20 @@ claude mcp add cloak-accounts -- python3 /Volumes/date/CloakBrowser-Manager/mcp-
 
 | 工具 | 说明 |
 |------|------|
-| `list_accounts` | 列出所有账号及状态（运行中/已停止） |
-| `start_account(account, url?)` | 按名称或 id 启动账号浏览器，返回其 `cdp_url` |
-| `stop_account(account)` | 停止账号浏览器（优雅关闭，刷 cookie、清缓存） |
+| `list_accounts` | 列出脱敏账号及状态（运行中/已停止） |
+| `get_account(account)` | 获取单个账号的脱敏信息 |
+| `account_context(account?)` | 汇总账号、运行状态、CDP 端点和就绪状态 |
+| `start_account(account, url?)` | 启动账号并等待 CDP 就绪 |
+| `ensure_account_running(account, url?)` | 幂等复用或启动账号并返回已验证端点 |
+| `stop_account(account)` | 停止账号浏览器 |
 | `stop_all` | 停止所有运行中的浏览器 |
-| `list_endpoints` | 列出运行中浏览器的 CDP 端点，供直接控制 |
-| `create_account(name, site?, proxy?, platform?)` | 新建账号 |
+| `list_endpoints` | 列出运行中浏览器的安全 CDP 元数据 |
+| `inspect_page(account, url?)` | 只读读取页面 URL、标题、可见文本和标签页 |
+| `navigate_page(account, url)` | 导航账号当前标签页到指定 HTTP(S) 地址 |
+| `create_account(name, site?, proxy?, platform?, notes?)` | 新建账号 |
+| `update_account(account, updates)` | 更新允许的非敏感账号设置 |
+| `delete_account(account, confirm=true)` | 删除账号及 profile，必须显式确认 |
+| `clear_account_data(account, confirm=true)` | 清除停止账号的 profile，必须显式确认 |
 | `clear_all_cache` | 清理所有已停止账号的缓存（保留 cookie） |
 
 ## 用法示例（直接对 Claude 说）
