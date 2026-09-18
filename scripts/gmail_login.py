@@ -25,14 +25,17 @@
     - 遇到 challenge/blocked 人工处理,不要重试轰炸。
 
 用法:
-  # 账号浏览器已在运行时,自动发现端口并登录:
-  python gmail_login.py --account xxx@mel.pub --password xxx
+  # 账号浏览器已在运行时,自动发现端口并安全提示输入密码:
+  python gmail_login.py --account xxx@mel.pub
 
   # 让脚本先通过 API 启动该账号浏览器再登录:
-  python gmail_login.py --account xxx@mel.pub --password xxx --start
+  python gmail_login.py --account xxx@mel.pub --start
 
-  # 指定 CDP 端口:
-  python gmail_login.py --port 5100 --account xxx@mel.pub --password xxx
+  # 指定 CDP 端口(仅用于本机受信任调试):
+  python gmail_login.py --port 5100 --account xxx@mel.pub
+
+  # 兼容旧调用,但密码可能出现在进程列表(不推荐):
+  python gmail_login.py --account xxx@mel.pub --password '<password>'
 
 依赖: pip install playwright   (CloakAccounts 应用需在运行)
 """
@@ -40,8 +43,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import random
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -71,18 +76,46 @@ async def _type_human(page: Page, selector: str, text: str, slow: float) -> None
     await asyncio.sleep(random.uniform(0.4, 0.9) * slow)
 
 
-def _api_base() -> str:
+def _api_config() -> tuple[str, str]:
+    path = Path.home() / ".cloak-accounts" / "server.json"
     try:
-        return json.loads(
-            (Path.home() / ".cloak-accounts" / "server.json").read_text()
-        )["base_url"]
-    except Exception:
-        return BASE_DEFAULT
+        value = json.loads(path.read_text(encoding="utf-8"))
+        base = value["base_url"]
+        token = value["token"]
+        if not isinstance(base, str):
+            raise ValueError("base_url must be a string")
+        parsed = urllib.parse.urlsplit(base)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid API port") from exc
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or port != 8797
+            or parsed.path not in {"", "/"}
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or not isinstance(token, str)
+            or not token
+        ):
+            raise ValueError("invalid local API configuration")
+        return base.rstrip("/"), token
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"无法读取受信任的本地 CloakAccounts 配置: {exc}") from None
+
+
+def _api_base() -> str:
+    return _api_config()[0]
 
 
 def _api(method: str, path: str, body: dict | None = None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(_api_base() + path, data=data, method=method)
+    base, token = _api_config()
+    req = urllib.request.Request(base + path, data=data, method=method)
+    req.add_header("X-Auth-Token", token)
     if data:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -91,17 +124,28 @@ def _api(method: str, path: str, body: dict | None = None):
 
 
 def resolve_id(account: str) -> str | None:
-    for a in _api("GET", "/accounts"):
-        if a["id"] == account or a["name"] == account:
-            return a["id"]
-    return None
+    matches = [
+        a for a in _api("GET", "/accounts")
+        if a.get("id") == account or a.get("name") == account
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(
+            "账号名称不唯一，请改用账号 id: "
+            + ", ".join(str(a.get("id")) for a in matches)
+        )
+    return str(matches[0]["id"]) if matches else None
 
 
 def resolve_port(account: str) -> int | None:
-    """CDP port of a running account (by name or id)."""
-    for e in _api("GET", "/endpoints"):
-        if e["id"] == account or e["name"] == account:
-            return e["cdp_port"]
+    """Return the CDP port for the uniquely resolved account."""
+    account_id = resolve_id(account)
+    if not account_id:
+        return None
+    for endpoint in _api("GET", "/endpoints"):
+        if endpoint.get("id") == account_id:
+            port = endpoint.get("cdp_port")
+            if isinstance(port, int) and 5100 <= port <= 5199:
+                return port
     return None
 
 
@@ -153,7 +197,11 @@ async def run(account: str, password: str, port: int | None, do_start: bool, slo
         aid = resolve_id(account)
         if not aid:
             return "NO_ACCOUNT"
-        _api("POST", f"/accounts/{aid}/start", {"url": LOGIN_URL})
+        _api(
+            "POST",
+            f"/accounts/{urllib.parse.quote(aid, safe='')}/start",
+            {"url": LOGIN_URL},
+        )
         for _ in range(20):
             await asyncio.sleep(1)
             port = resolve_port(aid)
@@ -178,12 +226,21 @@ async def run(account: str, password: str, port: int | None, do_start: bool, slo
 def main() -> None:
     ap = argparse.ArgumentParser(description="Gmail 自动登录(驱动 CloakAccounts 账号浏览器)")
     ap.add_argument("--account", required=True, help="账号名(邮箱)或 id")
-    ap.add_argument("--password", required=True)
-    ap.add_argument("--port", type=int, default=None, help="CDP 端口(默认自动发现)")
+    ap.add_argument(
+        "--password",
+        default=None,
+        help="不推荐：命令行密码可能出现在进程列表；省略后使用安全提示输入",
+    )
+    ap.add_argument("--port", type=int, default=None, help="CDP 端口(默认自动发现，范围 5100-5199)")
     ap.add_argument("--start", action="store_true", help="先经 API 启动该账号浏览器")
-    ap.add_argument("--slow", type=float, default=1.5, help="放慢倍数(越大越慢越像真人,默认1.5;风控严时可设 2~3)")
+    ap.add_argument("--slow", type=float, default=1.5, help="放慢倍数(必须为正数，默认1.5)")
     args = ap.parse_args()
-    result = asyncio.run(run(args.account, args.password, args.port, args.start, args.slow))
+    if args.port is not None and not 5100 <= args.port <= 5199:
+        ap.error("--port 必须在 5100 到 5199 之间")
+    if args.slow <= 0:
+        ap.error("--slow 必须为正数")
+    password = args.password or getpass.getpass("Google 密码: ")
+    result = asyncio.run(run(args.account, password, args.port, args.start, args.slow))
     print(f"{args.account} -> {result}")
 
 
