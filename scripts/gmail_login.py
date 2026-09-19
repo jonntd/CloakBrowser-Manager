@@ -52,7 +52,6 @@ from pathlib import Path
 
 from playwright.async_api import Page, async_playwright
 
-BASE_DEFAULT = "http://127.0.0.1:8797"
 LOGIN_URL = "https://accounts.google.com/ServiceLogin?service=mail"
 
 
@@ -105,10 +104,6 @@ def _api_config() -> tuple[str, str]:
         return base.rstrip("/"), token
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"无法读取受信任的本地 CloakAccounts 配置: {exc}") from None
-
-
-def _api_base() -> str:
-    return _api_config()[0]
 
 
 def _api(method: str, path: str, body: dict | None = None):
