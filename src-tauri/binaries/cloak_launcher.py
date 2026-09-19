@@ -416,6 +416,38 @@ def _resolve_extensions(account: dict[str, Any]) -> tuple[list[str], list[str]]:
     return paths, remaining
 
 
+# Flags the app itself owns: they select the debug/CDP transport, the profile
+# directory, or the network path. Letting account launch_args set them would
+# break CDP endpoint discovery, per-account profile isolation, or bypass the
+# configured proxy — so they are dropped before launch.
+RESERVED_LAUNCH_ARGS = {
+    "--user-data-dir",
+    "--proxy-server",
+    "--proxy-pac-url",
+    "--proxy-bypass-list",
+    "--no-proxy-server",
+}
+
+
+def _filter_launch_args(args: list[str]) -> tuple[list[str], list[str]]:
+    """Split launch_args into (allowed, reserved).
+
+    We append --remote-debugging-port last (Chromium honours the last
+    occurrence), but --remote-debugging-address/--remote-debugging-pipe are
+    never set by us and would silently move or break the CDP endpoint, so the
+    whole --remote-debugging* family is reserved.
+    """
+    allowed: list[str] = []
+    reserved: list[str] = []
+    for arg in args:
+        name = arg.split("=", 1)[0]
+        if name.startswith("--remote-debugging") or name in RESERVED_LAUNCH_ARGS:
+            reserved.append(arg)
+            continue
+        allowed.append(arg)
+    return allowed, reserved
+
+
 def _ensure_developer_mode(user_data_dir: Path) -> None:
     """Turn on chrome://extensions Developer Mode by seeding the profile prefs
     (must run while the browser is not running)."""
@@ -497,7 +529,12 @@ async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | No
     # extension_paths (it emits the correct --disable-extensions-except +
     # --load-extension pair; a bare --load-extension alone doesn't load).
     ext_paths, other_args = _resolve_extensions(account)
-    extra_args += other_args
+    user_args, reserved = _filter_launch_args(other_args)
+    if reserved:
+        logger.warning(
+            "Ignoring launch args reserved by the app (CDP/profile/proxy): %s", reserved
+        )
+    extra_args += user_args
     if ext_paths:
         logger.info("Loading %d extension(s): %s", len(ext_paths), ext_paths)
 

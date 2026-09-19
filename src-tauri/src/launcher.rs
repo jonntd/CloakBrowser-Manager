@@ -19,6 +19,22 @@ const GRACEFUL_STOP_SECS: u64 = 5;
 const CDP_PORT_BASE: u16 = 5100;
 const CDP_PORT_END: u16 = 5200;
 
+/// Per-account launcher logs are truncated at each launch; rotate an oversized
+/// one to `.old` first so a chatty long session can't grow without bound while
+/// the previous generation stays available for debugging.
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Move `path` to `path.old` (replacing any previous generation) when it is
+/// larger than `max_bytes`; a missing file is not an error.
+fn rotate_log_if_large(path: &std::path::Path, max_bytes: u64) {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > max_bytes {
+            let old = path.with_extension("log.old");
+            let _ = fs::rename(path, old);
+        }
+    }
+}
+
 /// A running account browser: the launcher child and the CDP port it owns.
 struct Running {
     child: Child,
@@ -104,6 +120,7 @@ impl Launcher {
         let log_dir = store::data_dir().join("logs");
         fs::create_dir_all(&log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
         let log_path = log_dir.join(format!("{}.log", account.id));
+        rotate_log_if_large(&log_path, MAX_LOG_BYTES);
         let log_file = fs::File::create(&log_path).map_err(|e| format!("创建日志文件失败: {e}"))?;
         let log_err = log_file
             .try_clone()
@@ -445,4 +462,42 @@ fn find_launcher_script() -> Result<PathBuf, String> {
         "找不到 cloak_launcher.py（期望位置: {}）",
         dev.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotate_moves_oversized_log_and_keeps_small_one() {
+        let dir = std::env::temp_dir().join(format!("cloak-log-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("acc.log");
+        fs::write(&log, vec![b'x'; 16]).unwrap();
+
+        rotate_log_if_large(&log, 8);
+        assert!(!log.exists());
+        let old = log.with_extension("log.old");
+        assert_eq!(fs::read(&old).unwrap().len(), 16);
+
+        // A second rotation replaces the previous .old generation.
+        fs::write(&log, vec![b'y'; 16]).unwrap();
+        rotate_log_if_large(&log, 8);
+        assert_eq!(fs::read(&old).unwrap(), vec![b'y'; 16]);
+
+        // Small logs are left in place for this launch's truncation.
+        fs::write(&log, vec![b'z'; 4]).unwrap();
+        rotate_log_if_large(&log, 8);
+        assert!(log.exists());
+        assert_eq!(fs::read(&log).unwrap(), vec![b'z'; 4]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotate_ignores_missing_log() {
+        let dir = std::env::temp_dir().join(format!("cloak-log-test-{}", uuid::Uuid::new_v4()));
+        rotate_log_if_large(&dir.join("missing.log"), 8);
+        assert!(!dir.join("missing.log.old").exists());
+    }
 }
