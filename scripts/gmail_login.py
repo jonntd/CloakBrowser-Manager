@@ -44,11 +44,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import json
 import random
+import sys
 import urllib.parse
-import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+import cloak_local_api
 
 from playwright.async_api import Page, async_playwright
 
@@ -75,47 +77,11 @@ async def _type_human(page: Page, selector: str, text: str, slow: float) -> None
     await asyncio.sleep(random.uniform(0.4, 0.9) * slow)
 
 
-def _api_config() -> tuple[str, str]:
-    path = Path.home() / ".cloak-accounts" / "server.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        base = value["base_url"]
-        token = value["token"]
-        if not isinstance(base, str):
-            raise ValueError("base_url must be a string")
-        parsed = urllib.parse.urlsplit(base)
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError("invalid API port") from exc
-        if (
-            parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or port != 8797
-            or parsed.path not in {"", "/"}
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or not isinstance(token, str)
-            or not token
-        ):
-            raise ValueError("invalid local API configuration")
-        return base.rstrip("/"), token
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"无法读取受信任的本地 CloakAccounts 配置: {exc}") from None
-
-
 def _api(method: str, path: str, body: dict | None = None):
-    data = json.dumps(body).encode() if body is not None else None
-    base, token = _api_config()
-    req = urllib.request.Request(base + path, data=data, method=method)
-    req.add_header("X-Auth-Token", token)
-    if data:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        t = r.read().decode()
-        return json.loads(t) if t.strip() else {}
+    try:
+        return cloak_local_api.request_json(method, path, body)
+    except cloak_local_api.LocalApiError as exc:
+        raise RuntimeError(str(exc)) from None
 
 
 def resolve_id(account: str) -> str | None:

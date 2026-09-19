@@ -12,12 +12,16 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+import cloak_local_api
 
 from mcp.server.fastmcp import FastMCP
 
@@ -36,66 +40,30 @@ class CloakAccountsError(RuntimeError):
 
 def _server_info() -> dict[str, Any]:
     try:
-        value = json.loads(SERVER_INFO.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CloakAccountsError(
-            f"无法读取 CloakAccounts 服务配置 {SERVER_INFO}：{exc}。请先启动桌面应用。"
-        ) from None
-    if not isinstance(value, dict):
-        raise CloakAccountsError("CloakAccounts server.json 格式无效。请重启桌面应用。")
-    return value
+        return cloak_local_api.read_server_info(SERVER_INFO)
+    except cloak_local_api.LocalApiError as exc:
+        raise CloakAccountsError(str(exc)) from None
 
 
 def _base_url() -> str:
-    value = _server_info().get("base_url") or DEFAULT_BASE
-    if not isinstance(value, str):
-        raise CloakAccountsError("server.json 的 base_url 必须是字符串。")
-    parsed = urllib.parse.urlsplit(value)
     try:
-        port = parsed.port
-    except ValueError:
-        raise CloakAccountsError("server.json 的 base_url 端口无效。") from None
-    if parsed.scheme != "http" or parsed.hostname not in LOOPBACK_HOSTS:
-        raise CloakAccountsError("出于安全原因，CloakAccounts API 只允许使用本机 HTTP 地址。")
-    if port != 8797 or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise CloakAccountsError("server.json 的 base_url 必须是本机 8797 端口，且不能包含凭据或参数。")
-    if parsed.path not in {"", "/"} or not parsed.netloc:
-        raise CloakAccountsError("server.json 的 base_url 必须指向本机 API 根路径。")
-    return value.rstrip("/")
+        return cloak_local_api.validate_base_url(_server_info().get("base_url") or DEFAULT_BASE)
+    except cloak_local_api.LocalApiError as exc:
+        raise CloakAccountsError(str(exc)) from None
 
 
 def _token() -> str:
-    value = _server_info().get("token")
-    if not isinstance(value, str) or not value:
-        raise CloakAccountsError("server.json 缺少 API token。请重启桌面应用。")
-    return value
+    try:
+        return cloak_local_api.validate_token(_server_info().get("token"))
+    except cloak_local_api.LocalApiError as exc:
+        raise CloakAccountsError(str(exc)) from None
 
 
 def _req(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-    url = _base_url() + (path if path.startswith("/") else f"/{path}")
-    data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method)
-    request.add_header("X-Auth-Token", _token())
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:2000]
-        if exc.code == 401:
-            raise CloakAccountsError(
-                "CloakAccounts 拒绝了请求（401）。请确认桌面应用仍在运行，并重新读取当前 server.json。"
-            ) from None
-        raise CloakAccountsError(f"CloakAccounts API 返回 HTTP {exc.code}: {detail}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise CloakAccountsError(f"无法连接 CloakAccounts 本地服务：{exc}") from None
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw.decode())
-    except (UnicodeError, json.JSONDecodeError):
-        raise CloakAccountsError("CloakAccounts API 返回了无效 JSON。") from None
+        return cloak_local_api.request_json(method, path, body, config=(_base_url(), _token()))
+    except cloak_local_api.LocalApiError as exc:
+        raise CloakAccountsError(str(exc)) from None
 
 
 def _safe_account(account: dict[str, Any]) -> dict[str, Any]:
