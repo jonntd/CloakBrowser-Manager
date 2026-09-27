@@ -31,8 +31,10 @@ pub struct Account {
     pub color_scheme: Option<String>,
     pub launch_args: Vec<String>,
     /// Page opened at launch when no explicit URL is passed. Empty = account site.
+    #[serde(default)]
     pub startup_page: Option<String>,
     /// Reopen the tabs left open when the browser was last closed.
+    #[serde(default)]
     pub restore_session: bool,
     pub created_at: String,
     pub updated_at: String,
