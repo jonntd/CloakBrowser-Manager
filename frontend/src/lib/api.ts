@@ -33,6 +33,8 @@ export interface Account {
   geoip: boolean;
   color_scheme: string | null;
   launch_args: string[];
+  startup_page: string | null;
+  restore_session: boolean;
   created_at: string;
   updated_at: string;
   status: "running" | "stopped";
@@ -60,6 +62,8 @@ export interface AccountCreateData {
   geoip?: boolean;
   color_scheme?: string | null;
   launch_args?: string[];
+  startup_page?: string | null;
+  restore_session?: boolean;
 }
 
 export interface OpenResult {

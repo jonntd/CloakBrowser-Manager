@@ -263,7 +263,7 @@ def update_account(account: str, updates: dict[str, Any]) -> dict[str, Any]:
     account_id = _resolve_id(account)
     if not isinstance(updates, dict) or not updates:
         raise CloakAccountsError("updates 必须是非空对象。")
-    allowed = {"name", "site", "notes", "tags", "timezone", "locale", "platform", "humanize", "human_preset", "geoip", "color_scheme", "screen_width", "screen_height", "hardware_concurrency", "fingerprint_seed"}
+    allowed = {"name", "site", "notes", "tags", "timezone", "locale", "platform", "humanize", "human_preset", "geoip", "color_scheme", "screen_width", "screen_height", "hardware_concurrency", "fingerprint_seed", "startup_page", "restore_session"}
     unknown = set(updates) - allowed
     if unknown:
         raise CloakAccountsError(f"不允许更新字段：{', '.join(sorted(unknown))}")

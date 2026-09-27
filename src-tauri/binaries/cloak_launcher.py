@@ -333,6 +333,56 @@ def _init_profile_defaults(user_data_dir: Path) -> None:
         logger.info("Set DuckDuckGo as default search for %s", user_data_dir.name)
 
 
+# Chromium "On startup" pref values for restore_on_startup.
+# 1 = continue where you left off, 4 = open a specific page, 5 = new tab.
+RESTORE_LAST_SESSION = 1
+OPEN_SPECIFIC_PAGE = 4
+NEW_TAB_PAGE = 5
+
+
+def _apply_startup_prefs(user_data_dir: Path, account: dict[str, Any]) -> None:
+    """Seed the profile's "On startup" behaviour (must run while browser is closed).
+
+    restore_session=True → Chromium reopens the tabs left open last time.
+    Otherwise startup_page (if set) opens as the start page, falling back to
+    the account site only on first launch (via the start-URL mechanism in
+    run(), not here).
+    """
+    default_dir = user_data_dir / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    prefs_path = default_dir / "Preferences"
+    prefs: dict = {}
+    if prefs_path.exists():
+        try:
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        except Exception:
+            prefs = {}
+
+    startup = prefs.setdefault("session", {})
+    if account.get("restore_session"):
+        startup["restore_on_startup"] = RESTORE_LAST_SESSION
+        # "Continue where you left off" covers everything; no URL list needed.
+        startup.pop("startup_urls", None)
+    else:
+        page = (account.get("startup_page") or "").strip()
+        if page:
+            startup["restore_on_startup"] = OPEN_SPECIFIC_PAGE
+            urls = startup.setdefault("startup_urls", [])
+            if page not in urls:
+                urls.insert(0, page)
+        else:
+            # Explicitly reset so a previously-set pref doesn't stick.
+            startup["restore_on_startup"] = NEW_TAB_PAGE
+            startup.pop("startup_urls", None)
+
+    prefs_path.write_text(json.dumps(prefs))
+    logger.info(
+        "Startup pref for %s: restore_on_startup=%s",
+        user_data_dir.name,
+        startup["restore_on_startup"],
+    )
+
+
 def _build_fingerprint_args(account: dict[str, Any]) -> list[str]:
     args: list[str] = [
         "--disable-infobars",
@@ -522,6 +572,7 @@ async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | No
     user_data_dir.mkdir(parents=True, exist_ok=True)
     _clean_lock_files(user_data_dir)
     _init_profile_defaults(user_data_dir)
+    _apply_startup_prefs(user_data_dir, account)
     _ensure_developer_mode(user_data_dir)
 
     extra_args = _build_fingerprint_args(account)
@@ -580,11 +631,13 @@ async def run(account: dict[str, Any], start_url: str | None, cdp_port: int | No
         viewport={"width": screen_w, "height": max(screen_h - 133, 600)},
     )
 
-    # Open start URL if provided
+    # Open start URL if provided. When "continue where you left off" is set the
+    # profile pref reopens the previous tabs on its own, so a bare start URL /
+    # account site would only add one more tab — skip it in that case.
     url = start_url or account.get("site") or None
     if url and not url.startswith(("http://", "https://")):
         url = f"https://{url}"
-    if url:
+    if url and not account.get("restore_session"):
         try:
             pages = context.pages
             page = pages[0] if pages else await context.new_page()

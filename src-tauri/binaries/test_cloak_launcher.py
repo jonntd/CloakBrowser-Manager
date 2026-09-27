@@ -1,4 +1,5 @@
 """cloak_launcher 的 launch_args 安全边界测试(全部离线,不启动浏览器)。"""
+import json
 import sys
 from pathlib import Path
 
@@ -71,3 +72,31 @@ def test_resolve_extensions_without_launch_args(monkeypatch, tmp_path):
     paths, remaining = cl._resolve_extensions({})
     assert paths == []
     assert remaining == []
+
+
+def _read_startup_prefs(tmp_path):
+    prefs = json.loads((tmp_path / "Default" / "Preferences").read_text(encoding="utf-8"))
+    return prefs["session"]
+
+
+def test_startup_prefs_restore_last_session(tmp_path):
+    cl._apply_startup_prefs(tmp_path, {"restore_session": True})
+    session = _read_startup_prefs(tmp_path)
+    assert session["restore_on_startup"] == cl.RESTORE_LAST_SESSION
+    assert "startup_urls" not in session
+
+
+def test_startup_prefs_specific_page_replaces_old_urls(tmp_path):
+    cl._apply_startup_prefs(tmp_path, {"startup_page": "https://a.com"})
+    cl._apply_startup_prefs(tmp_path, {"startup_page": "https://b.com"})
+    session = _read_startup_prefs(tmp_path)
+    assert session["restore_on_startup"] == cl.OPEN_SPECIFIC_PAGE
+    assert session["startup_urls"] == ["https://b.com", "https://a.com"]
+
+
+def test_startup_prefs_cleared_when_unset(tmp_path):
+    cl._apply_startup_prefs(tmp_path, {"startup_page": "https://a.com"})
+    cl._apply_startup_prefs(tmp_path, {})
+    session = _read_startup_prefs(tmp_path)
+    assert session["restore_on_startup"] == cl.NEW_TAB_PAGE
+    assert "startup_urls" not in session

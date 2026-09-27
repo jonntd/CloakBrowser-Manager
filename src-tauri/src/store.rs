@@ -149,6 +149,8 @@ fn build_account(id: &str, payload: AccountCreate) -> Result<Account, String> {
         geoip: payload.geoip.unwrap_or(false),
         color_scheme: empty_to_none(payload.color_scheme),
         launch_args: payload.launch_args.unwrap_or_default(),
+        startup_page: empty_to_none(payload.startup_page),
+        restore_session: payload.restore_session.unwrap_or(false),
         created_at: now.clone(),
         updated_at: now,
         status: "stopped".into(),
@@ -254,6 +256,12 @@ fn apply_update(a: &mut Account, payload: AccountUpdate) -> AppResult<()> {
     }
     if let Some(v) = payload.launch_args {
         a.launch_args = v;
+    }
+    if let Some(v) = payload.startup_page {
+        a.startup_page = empty_to_none(Some(v));
+    }
+    if let Some(v) = payload.restore_session {
+        a.restore_session = v;
     }
     Ok(())
 }

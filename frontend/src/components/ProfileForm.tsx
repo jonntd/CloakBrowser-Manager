@@ -70,6 +70,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
     human_preset: "default",
     geoip: false,
     launch_args: [],
+    startup_page: null,
+    restore_session: false,
     tags: [],
   });
 
@@ -104,6 +106,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
         geoip: profile.geoip,
         color_scheme: profile.color_scheme,
         launch_args: profile.launch_args ?? [],
+        startup_page: profile.startup_page,
+        restore_session: profile.restore_session,
         notes: profile.notes,
         tags: profile.tags ?? [],
       });
@@ -495,6 +499,27 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
         <section>
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">行为</h3>
           <div className="space-y-3">
+            <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.restore_session ?? false}
+                onChange={(e) => set("restore_session", e.target.checked)}
+                className="rounded border-border bg-surface-2"
+              />
+              启动时继续浏览上次打开的网页
+            </label>
+            {!form.restore_session && (
+              <div>
+                <label className="label">起始页（可选）</label>
+                <input
+                  className="input"
+                  value={form.startup_page ?? ""}
+                  onChange={(e) => set("startup_page", e.target.value || null)}
+                  placeholder="例如：https://example.com，留空则打开目标站点"
+                  title="每次启动时打开的页面，优先于目标站点"
+                />
+              </div>
+            )}
             <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
               <input
                 type="checkbox"

@@ -30,6 +30,10 @@ pub struct Account {
     pub geoip: bool,
     pub color_scheme: Option<String>,
     pub launch_args: Vec<String>,
+    /// Page opened at launch when no explicit URL is passed. Empty = account site.
+    pub startup_page: Option<String>,
+    /// Reopen the tabs left open when the browser was last closed.
+    pub restore_session: bool,
     pub created_at: String,
     pub updated_at: String,
     /// Runtime-only field (not persisted). Injected by list/get commands.
@@ -63,6 +67,8 @@ pub struct AccountCreate {
     pub geoip: Option<bool>,
     pub color_scheme: Option<String>,
     pub launch_args: Option<Vec<String>>,
+    pub startup_page: Option<String>,
+    pub restore_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,6 +93,8 @@ pub struct AccountUpdate {
     pub geoip: Option<bool>,
     pub color_scheme: Option<String>,
     pub launch_args: Option<Vec<String>>,
+    pub startup_page: Option<String>,
+    pub restore_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
