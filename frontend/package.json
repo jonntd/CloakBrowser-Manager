@@ -9,9 +9,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "cargo tauri --manifest-path ../src-tauri/Cargo.toml",
-    "tauri:dev": "cargo tauri dev --manifest-path ../src-tauri/Cargo.toml",
-    "tauri:build": "cargo tauri build --manifest-path ../src-tauri/Cargo.toml"
+    "tauri": "cargo tauri",
+    "tauri:dev": "cargo tauri dev",
+    "tauri:build": "cargo tauri build",
+    "app:install": "bash ../scripts/build_install.sh",
+    "app:reinstall": "bash ../scripts/build_install.sh --skip-build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
