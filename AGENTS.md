@@ -12,6 +12,29 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Deliverable = installed app (not just a build)
+
+After changing Rust or frontend code, do NOT stop at "bundle built". The user
+runs the packaged app from /Applications, so close the loop in one step:
+
+```bash
+cd frontend && npm run app:install   # build + quit running app + ditto-replace /Applications/CloakAccounts.app + relaunch + verify
+cd frontend && npm run app:reinstall # same, but reuse the last built bundle (no recompile)
+```
+
+## Compatibility guardrails
+
+- Adding a field to the `Account` struct (`src-tauri/src/models.rs`): it needs
+  `#[serde(default)]`, or old `~/.cloak-accounts/accounts.json` files fail to
+  parse and the app panics on startup (it refuses to boot on an unreadable store).
+- Adding an updatable account field: also add it to the allow-list in
+  `mcp-server/cloak_accounts_mcp.py` (`update_account`) and to
+  `frontend/src/lib/api.ts` (`Account` + `AccountCreateData`) and the
+  ProfileForm if user-editable.
+- Launch-time browser behavior (proxy, fingerprint, Chromium profile prefs)
+  lives in `src-tauri/binaries/cloak_launcher.py`; test offline with
+  `python3 -m pytest src-tauri/binaries/test_cloak_launcher.py`.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
