@@ -181,9 +181,10 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
   };
 
   const handleRandomizeFingerprint = () => {
-    if (!onRandomizeFingerprint) return;
     randomizeSeed();
-    onRandomizeFingerprint();
+    // Edit mode also persists the new seed server-side right away; in create
+    // mode the form state alone is enough (saved on submit).
+    onRandomizeFingerprint?.();
     setFingerprintFlash(true);
     setTimeout(() => setFingerprintFlash(false), 1500);
   };
@@ -236,21 +237,19 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel, onRandomizeFi
           )}
         </div>
         <div className="flex items-center gap-2">
-          {isEdit && onRandomizeFingerprint && (
-            <button
-              type="button"
-              onClick={handleRandomizeFingerprint}
-              className="btn-secondary flex items-center gap-1.5"
-              title="生成随机指纹"
-            >
-              {fingerprintFlash ? (
-                <span className="text-amber-400 font-medium">✓</span>
-              ) : (
-                <Shuffle className="h-3.5 w-3.5" />
-              )}
-              <span>随机指纹</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleRandomizeFingerprint}
+            className="btn-secondary flex items-center gap-1.5"
+            title="生成随机指纹"
+          >
+            {fingerprintFlash ? (
+              <span className="text-amber-400 font-medium">✓</span>
+            ) : (
+              <Shuffle className="h-3.5 w-3.5" />
+            )}
+            <span>随机指纹</span>
+          </button>
           {isEdit && onClearData && (
             <button
               type="button"
