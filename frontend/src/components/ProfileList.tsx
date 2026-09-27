@@ -227,18 +227,23 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew, onOpen, onO
             }`}
             onClick={() => onSelect(account.id)}
           >
-            <div className="flex items-center justify-between gap-1">
-              <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-start justify-between gap-1">
+              <div className="flex items-start gap-2 min-w-0 flex-1">
                 <input
                   type="checkbox"
                   checked={checked.has(account.id)}
                   onChange={() => toggleChecked(account.id)}
                   onClick={(e) => e.stopPropagation()}
-                  className="flex-shrink-0 rounded border-border bg-surface-2 cursor-pointer"
+                  className="flex-shrink-0 mt-1 rounded border-border bg-surface-2 cursor-pointer"
                   title="选择用于批量启动"
                 />
                 <StatusIndicator status={account.status} />
-                <span className="text-sm font-medium truncate">{account.name}</span>
+                <span
+                  className="text-sm font-medium break-all mt-0.5"
+                  title={account.name}
+                >
+                  {account.name}
+                </span>
               </div>
               <button
                 onClick={(e) => {
@@ -263,9 +268,11 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew, onOpen, onO
                 <span>{account.status === "running" ? "停止" : "启动"}</span>
               </button>
             </div>
-            <div className="flex items-center gap-2 mt-1 ml-4">
+            <div className="flex items-center gap-2 mt-1 ml-4 flex-wrap">
               {account.site && (
-                <span className="text-xs text-gray-400 truncate max-w-[120px]">{account.site}</span>
+                <span className="text-xs text-gray-400 break-all max-w-full" title={account.site}>
+                  {account.site}
+                </span>
               )}
               <span className="text-xs text-gray-500 capitalize">{account.platform}</span>
               {account.proxy && (

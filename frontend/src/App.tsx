@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { PanelLeftClose, PanelLeft, ExternalLink, X, Copy, Check } from "lucide-react";
 import { useAccounts } from "./hooks/useAccounts";
 import type { AccountCreateData } from "./lib/api";
@@ -7,6 +7,13 @@ import { ProfileForm } from "./components/ProfileForm";
 import { StatusIndicator } from "./components/StatusIndicator";
 
 type View = "empty" | "create" | "edit";
+
+/** Sidebar width clamp: narrow enough to keep a usable main panel, wide
+ *  enough for long account names / email addresses. */
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 520;
+const SIDEBAR_DEFAULT = 264;
+const SIDEBAR_WIDTH_KEY = "cloakaccounts.sidebar-width";
 
 /** Copy text via a hidden textarea + execCommand — works in the Tauri webview
  *  without the clipboard plugin/permission. */
@@ -32,6 +39,51 @@ export default function App() {
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    return saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX ? saved : SIDEBAR_DEFAULT;
+  });
+  const dragging = useRef(false);
+
+  const clampWidth = (w: number) =>
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w));
+
+  // Pointer-based resize: the handle captures the pointer so dragging past
+  // the window edges (or over iframes) keeps tracking until mouseup.
+  const onHandlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onHandlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragging.current) return;
+    setSidebarWidth(clampWidth(e.clientX));
+  }, []);
+
+  const onHandlePointerUp = useCallback(() => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    setSidebarWidth((w) => {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clampWidth(w)));
+      return w;
+    });
+  }, []);
+
+  // Double-click resets to the default width.
+  const onHandleDoubleClick = useCallback(() => {
+    setSidebarWidth(SIDEBAR_DEFAULT);
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT));
+  }, []);
+
+  // Release the pointer capture if the window loses focus mid-drag.
+  useEffect(() => {
+    const cancel = () => {
+      dragging.current = false;
+    };
+    window.addEventListener("blur", cancel);
+    return () => window.removeEventListener("blur", cancel);
+  }, []);
 
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
   const selectedEndpoint = selected ? endpoints[selected.id] : undefined;
@@ -84,20 +136,41 @@ export default function App() {
     <div className="h-screen flex bg-surface-0 text-gray-100">
       {/* Sidebar */}
       {sidebarOpen && (
-        <div className="w-64 border-r border-border bg-surface-1 flex-shrink-0">
-          <ProfileList
-            profiles={accounts}
-            selectedId={selectedId}
-            onSelect={handleSelect}
-            onNew={handleNew}
-            onOpen={open}
-            onOpenMany={openMany}
-            onStop={stop}
-            onStopMany={stopMany}
-            onStopAll={stopAll}
-            onClearAllCache={clearAllCache}
-          />
-        </div>
+        <>
+          <div
+            className="border-r border-border bg-surface-1 flex-shrink-0"
+            style={{ width: sidebarWidth }}
+          >
+            <ProfileList
+              profiles={accounts}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              onNew={handleNew}
+              onOpen={open}
+              onOpenMany={openMany}
+              onStop={stop}
+              onStopMany={stopMany}
+              onStopAll={stopAll}
+              onClearAllCache={clearAllCache}
+            />
+          </div>
+          {/* Drag handle: 4px visual line with a generous hit area. */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="拖动调整侧边栏宽度"
+            onPointerDown={onHandlePointerDown}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={onHandlePointerUp}
+            onPointerCancel={onHandlePointerUp}
+            onDoubleClick={onHandleDoubleClick}
+            className="w-1 flex-shrink-0 cursor-col-resize group relative"
+            title="拖动调整侧边栏宽度，双击恢复默认"
+          >
+            <div className="absolute inset-y-0 left-0 w-px bg-border group-hover:bg-accent group-active:bg-accent transition-colors" />
+            <div className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+        </>
       )}
 
       {/* Main panel */}
